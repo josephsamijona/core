@@ -1,0 +1,52 @@
+# Système d'exploitation
+*.DS_Store
+*.log
+*.pot
+*.pyc
+__pycache__/
+Thumbs.db
+
+# Environnement virtuel
+venv/
+env/
+.myenv/
+
+# Paramètres locaux
+.env
+*.local
+
+# Cache Python
+*.py[cod]
+*$py.class
+
+# Base de données
+db.sqlite3
+db.sqlite3-journal
+
+# Migration Django
+*/migrations/*.pyc
+*/migrations/__pycache__/
+*/migrations/*.py
+*/migrations/*
+
+# Static files
+ 
+
+# Media files
+media/
+
+# Fichiers de JetBrains (PyCharm, etc.)
+.idea/
+
+# Fichiers VSCode
+.vscode/
+
+# Fichiers de tests
+coverage.xml
+htmlcov/
+*.cover
+*.coverage
+
+# Fichiers divers
+*.bak
+*.swp

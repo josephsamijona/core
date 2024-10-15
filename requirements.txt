@@ -1,0 +1,82 @@
+# Base Django
+Django
+
+# REST Framework pour l'API
+djangorestframework
+djangorestframework-simplejwt
+
+# Pour la base de données MySQL
+mysqlclient
+
+# Pour les variables d'environnement
+django-environ
+
+# CORS headers pour l'API
+django-cors-headers
+
+# Celery pour les tâches asynchrones
+celery
+
+# Redis comme broker pour Celery
+redis
+
+# Pour la gestion des websockets
+channels
+channels-redis
+
+# Pour la documentation de l'API
+drf-yasg
+
+# Pour les tests
+pytest
+pytest-django
+
+# Pour le déploiement
+gunicorn
+
+# Pour la gestion des fichiers statiques en production
+whitenoise
+
+# Pour les tâches de maintenance Django
+django-maintenance-mode
+
+# Outils de débogage
+django-debug-toolbar
+
+# Sécurité supplémentaire
+django-csp
+
+# Optimisation des images
+Pillow
+
+# Pour les exports Excel si nécessaire
+openpyxl
+
+# Pour les graphiques et visualisations de données si nécessaire
+matplotlib
+
+# Pour la manipulation avancée de données si nécessaire
+pandas
+
+# Pour la géolocalisation si nécessaire
+geopy
+
+# Pour l'internationalisation si nécessaire
+django-modeltranslation
+
+# Pour le logging avancé
+python-json-logger
+
+# Pour la compression des réponses HTTP
+django-compressor
+
+# Pour la gestion des files d'attente des tâches en arrière-plan
+django-q
+
+# Pour le monitoring des performances
+django-silk
+
+qrcode
+
+celery 
+django-celery-beat
