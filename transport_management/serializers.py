@@ -1,49 +1,68 @@
+# transport_api/serializers.py
+
 from rest_framework import serializers
-from .models import OperationalControlPlan, Schedule, Driver, DriverSchedule, DriverVehicleAssignment
-from inventory_management.models import Vehicle
+from .models import (
+    OperationalRule, RuleExecution, RuleParameter, RuleSet, RuleSetMembership,
+    Destination, Route, Stop, RouteStop, Schedule, ScheduleException,
+    ResourceAvailability, Driver
+)
 
-class OCPSerializer(serializers.ModelSerializer):
+class OperationalRuleSerializer(serializers.ModelSerializer):
     class Meta:
-        model = OperationalControlPlan
+        model = OperationalRule
         fields = '__all__'
-        read_only_fields = ['created_by', 'created_at', 'updated_at', 'is_renewed']
 
-    def validate(self, data):
-        if data.get('end_date') and data.get('start_date') and data['end_date'] <= data['start_date']:
-            raise serializers.ValidationError("La date de fin doit être postérieure à la date de début.")
-        return data
-
-class OCPListSerializer(serializers.ModelSerializer):
+class RuleExecutionSerializer(serializers.ModelSerializer):
     class Meta:
-        model = OperationalControlPlan
-        fields = ['id', 'name', 'start_date', 'end_date', 'is_active', 'is_renewed']
+        model = RuleExecution
+        fields = '__all__'
 
-class OCPActivationSerializer(serializers.Serializer):
-    is_active = serializers.BooleanField()
-    
+class RuleParameterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RuleParameter
+        fields = '__all__'
+
+class RuleSetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RuleSet
+        fields = '__all__'
+
+class DestinationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Destination
+        fields = '__all__'
+
+class RouteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Route
+        fields = '__all__'
+
+class StopSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Stop
+        fields = '__all__'
+
+class RouteStopSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RouteStop
+        fields = '__all__'
+
 class ScheduleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Schedule
         fields = '__all__'
 
-    def validate(self, data):
-        if data['start_time'] >= data['end_time']:
-            raise serializers.ValidationError("End time must be after start time.")
-        if data['frequency'] <= 0:
-            raise serializers.ValidationError("Frequency must be a positive integer.")
-        return data
-    
-class VehicleSerializer(serializers.ModelSerializer):
+class ScheduleExceptionSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Vehicle
+        model = ScheduleException
+        fields = '__all__'
+
+class ResourceAvailabilitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ResourceAvailability
         fields = '__all__'
 
 class DriverSerializer(serializers.ModelSerializer):
     class Meta:
         model = Driver
-        fields = '__all__'
-
-class DriverVehicleAssignmentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = DriverVehicleAssignment
         fields = '__all__'

@@ -5,7 +5,7 @@ from .models import SubscriptionPlan, Subscription, PassengerUser, CardAssignmen
 from financial_management.models import Revenue
 from user_management.models import User
 from django.utils import timezone
-from transport_management.models import PassengerTrip
+#from transport_management.models import PassengerTrip
 
 
 
@@ -131,5 +131,5 @@ class AlightingValidationSerializer(serializers.Serializer):
 
 class PassengerTripSerializer(serializers.ModelSerializer):
     class Meta:
-        model = PassengerTrip
+        #model = PassengerTrip
         fields = ['id', 'passenger', 'trip', 'boarding_stop', 'alighting_stop', 'boarding_time', 'alighting_time', 'status', 'ocp']

@@ -249,3 +249,5 @@ if 'test' in sys.argv:
     EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
     
 #MYSQL_PASSWORD = env('MYSQL_PASSWORD', default='')
+USE_TZ = True
+TIME_ZONE = 'America/New_York'  # Ou votre fuseau horaire local

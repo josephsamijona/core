@@ -18,7 +18,7 @@ from financial_management.models import Revenue
 from .serializers import SubscriptionPlanSerializer, SubscriptionSerializer, SubscriptionUpdateSerializer, PassengerUserSerializer, CardAssignmentidSerializer, CardInfoSerializer, TemporaryVirtualCardSerializer, PaymentSerializer, BalanceSerializer, TransactionSerializer, BoardingValidationSerializer, AlightingValidationSerializer, PassengerTripSerializer
 
 from user_management.models import User
-from transport_management.models import Trip, Stop, PassengerTrip
+#from transport_management.models import Trip, Stop, PassengerTrip
 
 class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     queryset = SubscriptionPlan.objects.all()

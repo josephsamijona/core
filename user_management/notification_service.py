@@ -4,7 +4,7 @@ from django.conf import settings
 from django.db import models
 from .models import Notification, User
 from membership_management.models import Subscription, TransportCard
-from transport_management.models import Reservation, Trip, Vehicle
+from transport_management.models import  Vehicle
 
 class NotificationService:
     @staticmethod

@@ -3,7 +3,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 from user_management.models import Notification, User
 from membership_management.models import Subscription, TransportCard, Payment
-from transport_management.models import Reservation, Trip, Vehicle
+from transport_management.models import  Vehicle
 from user_management.notification_service import NotificationService
 
 @receiver(pre_save, sender=Subscription)
@@ -23,16 +23,7 @@ def notify_subscription_changes(sender, instance, created, **kwargs):
     elif instance.auto_renew:
         NotificationService.auto_renewal_notification(instance)
 
-@receiver(post_save, sender=Trip)
-def notify_trip_changes(sender, instance, created, **kwargs):
-    if created:
-        NotificationService.trip_notification(instance, 'trip_reminder')
-    else:
-        # Vérifier si le voyage a été retardé ou annulé
-        if instance.is_delayed():
-            NotificationService.trip_notification(instance, 'trip_delay')
-        elif instance.is_cancelled():
-            NotificationService.trip_notification(instance, 'trip_cancellation')
+
 
 @receiver(pre_save, sender=TransportCard)
 def check_card_expiration(sender, instance, **kwargs):
@@ -65,15 +56,7 @@ def notify_account_changes(sender, instance, **kwargs):
             subject="Changement de mot de passe",
             message="Votre mot de passe a été modifié avec succès. Si ce n'était pas vous, contactez immédiatement le support."
         )
-@receiver(post_save, sender=Reservation)
-def notify_reservation_status(sender, instance, created, **kwargs):
-    if created:
-        NotificationService.reservation_notification(instance, 'reservation_confirmation')
-    else:
-        if instance.status == 'confirmed':
-            NotificationService.reservation_notification(instance, 'reservation_reminder')
-        elif instance.status == 'cancelled':
-            NotificationService.reservation_notification(instance, 'reservation_change')
+
 
 # Vous pouvez ajouter d'autres signaux ici pour d'autres modèles ou événements
 

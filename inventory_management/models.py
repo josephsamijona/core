@@ -83,7 +83,7 @@ class Vehicle(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
 
     def __str__(self):
-        return f"{self.vehicle_number} - {self.make} {self.model}"
+        return f"{self.vehicle_number} ({self.license_plate})"
 
 class VehicleMaintenance(models.Model):
     vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, related_name='maintenances')
