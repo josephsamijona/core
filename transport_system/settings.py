@@ -14,8 +14,8 @@ import environ
 from pathlib import Path
 from datetime import timedelta
 import sys
-from datetime import timedelta
 
+from celery.schedules import crontab
 
 if 'test' in sys.argv:
     DATABASES = {
@@ -221,13 +221,9 @@ SIMPLE_JWT = {
 AUTH_USER_MODEL = 'user_management.User'
 
 CELERY_BEAT_SCHEDULE = {
-    'check-upcoming-trips': {
-        'task': 'transport_system.tasks.check_upcoming_trips',
-        'schedule': 3600.0,  # Toutes les heures
-    },
-    'process-notifications': {
-        'task': 'transport_system.tasks.process_notifications',
-        'schedule': 300.0,  # Toutes les 5 minutes
+    'generate-daily-schedules': {
+        'task': 'transport_management.tasks.generate_daily_schedules',
+        'schedule': crontab(hour=0, minute=0),
     },
 }
 
@@ -251,3 +247,4 @@ if 'test' in sys.argv:
 #MYSQL_PASSWORD = env('MYSQL_PASSWORD', default='')
 USE_TZ = True
 TIME_ZONE = 'America/New_York'  # Ou votre fuseau horaire local
+

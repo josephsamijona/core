@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from geopy.distance import geodesic
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.core.exceptions import ValidationError
@@ -223,7 +224,21 @@ class Route(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-
+    
+    def calculate_metrics(self):
+        total_distance = 0
+        previous_destination = None
+        for destination in self.destinations.all().order_by('id'):
+            if previous_destination:
+                coords_1 = (previous_destination.latitude, previous_destination.longitude)
+                coords_2 = (destination.latitude, destination.longitude)
+                distance = geodesic(coords_1, coords_2).kilometers
+                total_distance += distance
+            previous_destination = destination
+        self.total_distance = total_distance
+        # Supposons une vitesse moyenne de 50 km/h
+        self.estimated_duration = timedelta(hours=total_distance / 50)
+        
     def __str__(self):
         return f"{self.name} ({self.route_category})"
 
@@ -348,10 +363,10 @@ class RouteStop(models.Model):
 
 class Schedule(models.Model):
     # Relations
-    route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='schedules')
+    route = models.ForeignKey('Route', on_delete=models.CASCADE, related_name='schedules')
 
     # Identification
-    schedule_code = models.CharField(max_length=20, unique=True)
+    schedule_code = models.CharField(max_length=20)
     schedule_version = models.CharField(max_length=10)
     season = models.CharField(max_length=20, choices=[
         ('regular', 'Régulier'),
@@ -382,8 +397,8 @@ class Schedule(models.Model):
     minimum_layover = models.IntegerField(default=5)
 
     # Ajustements
-    weather_adjustment = models.JSONField(default=dict)
-    special_event_adjustment = models.JSONField(default=dict)
+    weather_adjustment = models.JSONField(default=dict, blank=True)
+    special_event_adjustment = models.JSONField(default=dict, blank=True)
     peak_hours_frequency = models.IntegerField(null=True, blank=True)
     off_peak_frequency = models.IntegerField(null=True, blank=True)
 
@@ -400,6 +415,7 @@ class Schedule(models.Model):
 
     # Notes et métadonnées
     notes = models.TextField(blank=True)
+    timepoints = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(
@@ -416,11 +432,52 @@ class Schedule(models.Model):
             ('schedule_code', 'schedule_version')
         ]
 
+    def generate_timepoints_for_date(self, date):
+        """
+        Génère les horaires pour une date spécifique en tenant compte des ajustements.
+        """
+        times = []
+        current_datetime = datetime.combine(date, self.start_time)
+        end_datetime = datetime.combine(date, self.end_time)
+
+        # Déterminer la fréquence applicable
+        frequency = self.frequency
+        if self.peak_hours_frequency and self.is_peak_hour(current_datetime.time()):
+            frequency = self.peak_hours_frequency
+        elif self.off_peak_frequency:
+            frequency = self.off_peak_frequency
+
+        while current_datetime <= end_datetime:
+            times.append(current_datetime.strftime('%H:%M:%S'))
+            current_datetime += timedelta(minutes=frequency)
+            # Ajuster la fréquence si nécessaire
+            if self.peak_hours_frequency and self.is_peak_hour(current_datetime.time()):
+                frequency = self.peak_hours_frequency
+            else:
+                frequency = self.frequency
+
+        self.timepoints = times
+        self.save()
+
+    def is_peak_hour(self, time):
+        """
+        Détermine si l'heure donnée est une heure de pointe.
+        """
+        # Exemple simple : heures de pointe entre 7h-9h et 17h-19h
+        peak_hours = [
+            (datetime.strptime('07:00', '%H:%M').time(), datetime.strptime('09:00', '%H:%M').time()),
+            (datetime.strptime('17:00', '%H:%M').time(), datetime.strptime('19:00', '%H:%M').time()),
+        ]
+        for start, end in peak_hours:
+            if start <= time <= end:
+                return True
+        return False
+
     def clean(self):
         if self.start_time >= self.end_time:
-            raise ValidationError("End time must be after start time")
+            raise ValidationError("L'heure de fin doit être après l'heure de début")
         if self.frequency <= 0:
-            raise ValidationError("Frequency must be positive")
+            raise ValidationError("La fréquence doit être positive")
 
     def __str__(self):
         return f"{self.route.name} - {self.get_day_of_week_display()} ({self.start_time}-{self.end_time})"
@@ -429,7 +486,7 @@ class Schedule(models.Model):
 class ScheduleException(models.Model):
     # Relations
     schedule = models.ForeignKey(Schedule, on_delete=models.CASCADE, related_name='exceptions')
-    
+
     # Informations de base
     exception_date = models.DateField()
     exception_type = models.CharField(max_length=50, choices=[
@@ -439,28 +496,28 @@ class ScheduleException(models.Model):
         ('maintenance', 'Maintenance'),
         ('other', 'Autre')
     ])
-    
+
     # Horaires modifiés
     start_time = models.TimeField(null=True, blank=True)
     end_time = models.TimeField(null=True, blank=True)
     modified_frequency = models.IntegerField(null=True, blank=True)
-    
+
     # Statuts
     is_cancelled = models.BooleanField(default=False)
     is_modified = models.BooleanField(default=True)
     requires_approval = models.BooleanField(default=True)
-    
+
     # Détails
     reason = models.TextField()
     alternative_service = models.TextField(blank=True)
     notification_sent = models.BooleanField(default=False)
-    affected_routes = models.ManyToManyField(Route)
+    affected_routes = models.ManyToManyField('Route', blank=True)
     impact_level = models.CharField(max_length=20, choices=[
         ('low', 'Faible'),
         ('medium', 'Moyen'),
         ('high', 'Élevé')
     ])
-    
+
     # Métadonnées
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
@@ -471,7 +528,7 @@ class ScheduleException(models.Model):
         unique_together = ['schedule', 'exception_date']
 
     def __str__(self):
-        return f"Exception for {self.schedule} on {self.exception_date}"
+        return f"Exception pour {self.schedule} le {self.exception_date}"
 
 class ResourceAvailability(models.Model):
     # Type de ressource

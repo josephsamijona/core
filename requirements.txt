@@ -81,3 +81,5 @@ qrcode
 celery 
 django-celery-beat
 pytz
+django-filter
+geopy
