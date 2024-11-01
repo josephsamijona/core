@@ -222,9 +222,24 @@ AUTH_USER_MODEL = 'user_management.User'
 
 CELERY_BEAT_SCHEDULE = {
     'generate-daily-schedules': {
-        'task': 'transport_management.tasks.generate_daily_schedules',
-        'schedule': crontab(hour=0, minute=0),
+        'task': 'transport_api.tasks.generate_daily_schedules',
+        'schedule': crontab(minute='0', hour='0'),
     },
+    'cleanup-old-schedules': {
+        'task': 'transport_api.tasks.cleanup_old_schedules',
+        'schedule': crontab(minute='0', hour='1'),
+    },
+    'activate-pending-schedules': {
+        'task': 'transport_api.tasks.activate_pending_schedules',
+        'schedule': crontab(minute='0', hour='0'),
+    },
+}
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': 'redis://127.0.0.1:6379/1',
+    }
 }
 
 SIMPLE_JWT = {
@@ -248,3 +263,38 @@ if 'test' in sys.argv:
 USE_TZ = True
 TIME_ZONE = 'America/New_York'  # Ou votre fuseau horaire local
 
+LOG_DIRECTORY = os.path.join(BASE_DIR, 'logs')
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOG_DIRECTORY, 'transport_management.log'),
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'transport_api': {
+            'handlers': ['file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
+}

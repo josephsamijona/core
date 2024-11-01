@@ -361,6 +361,7 @@ class RouteStop(models.Model):
     def __str__(self):
         return f"{self.route.name} - Stop {self.stop.name} (Order: {self.order})"
 
+
 class Schedule(models.Model):
     # Relations
     route = models.ForeignKey('Route', on_delete=models.CASCADE, related_name='schedules')
@@ -402,7 +403,7 @@ class Schedule(models.Model):
     peak_hours_frequency = models.IntegerField(null=True, blank=True)
     off_peak_frequency = models.IntegerField(null=True, blank=True)
 
-    # Statut et validation
+    # Statut et validation existants
     is_active = models.BooleanField(default=True)
     is_approved = models.BooleanField(default=False)
     approval_date = models.DateTimeField(null=True, blank=True)
@@ -411,6 +412,37 @@ class Schedule(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         related_name='approved_schedules'
+    )
+
+    # Nouveaux champs pour la gestion des statuts
+    STATUS_CHOICES = [
+        ('draft', 'Brouillon'),
+        ('pending', 'En attente de validation'),
+        ('validated', 'Validé'),
+        ('active', 'Actif'),
+        ('inactive', 'Inactif'),
+        ('archived', 'Archivé')
+    ]
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='draft'
+    )
+
+    # Gestion des versions
+    is_current_version = models.BooleanField(
+        default=False,
+        help_text="Indique si c'est la version actuelle de l'horaire"
+    )
+    validation_history = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Historique des validations"
+    )
+    activation_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Date de mise en service de l'horaire"
     )
 
     # Notes et métadonnées
@@ -426,6 +458,7 @@ class Schedule(models.Model):
     )
 
     class Meta:
+        db_table = 'transport_management_schedule'
         ordering = ['route', 'day_of_week', 'start_time']
         unique_together = [
             ('route', 'day_of_week', 'start_time', 'schedule_version'),
@@ -440,7 +473,6 @@ class Schedule(models.Model):
         current_datetime = datetime.combine(date, self.start_time)
         end_datetime = datetime.combine(date, self.end_time)
 
-        # Déterminer la fréquence applicable
         frequency = self.frequency
         if self.peak_hours_frequency and self.is_peak_hour(current_datetime.time()):
             frequency = self.peak_hours_frequency
@@ -448,9 +480,14 @@ class Schedule(models.Model):
             frequency = self.off_peak_frequency
 
         while current_datetime <= end_datetime:
-            times.append(current_datetime.strftime('%H:%M:%S'))
+            # Appliquer les ajustements météo si nécessaire
+            adjusted_time = self.apply_weather_adjustment(current_datetime)
+            # Appliquer les ajustements événements spéciaux
+            adjusted_time = self.apply_special_event_adjustment(adjusted_time)
+            
+            times.append(adjusted_time.strftime('%H:%M:%S'))
             current_datetime += timedelta(minutes=frequency)
-            # Ajuster la fréquence si nécessaire
+            
             if self.peak_hours_frequency and self.is_peak_hour(current_datetime.time()):
                 frequency = self.peak_hours_frequency
             else:
@@ -459,11 +496,28 @@ class Schedule(models.Model):
         self.timepoints = times
         self.save()
 
+    def apply_weather_adjustment(self, datetime_obj):
+        """
+        Applique les ajustements météorologiques aux horaires.
+        """
+        if self.weather_adjustment:
+            adjustment_minutes = self.weather_adjustment.get('adjustment_minutes', 0)
+            return datetime_obj + timedelta(minutes=adjustment_minutes)
+        return datetime_obj
+
+    def apply_special_event_adjustment(self, datetime_obj):
+        """
+        Applique les ajustements pour événements spéciaux.
+        """
+        if self.special_event_adjustment:
+            adjustment_minutes = self.special_event_adjustment.get('adjustment_minutes', 0)
+            return datetime_obj + timedelta(minutes=adjustment_minutes)
+        return datetime_obj
+
     def is_peak_hour(self, time):
         """
         Détermine si l'heure donnée est une heure de pointe.
         """
-        # Exemple simple : heures de pointe entre 7h-9h et 17h-19h
         peak_hours = [
             (datetime.strptime('07:00', '%H:%M').time(), datetime.strptime('09:00', '%H:%M').time()),
             (datetime.strptime('17:00', '%H:%M').time(), datetime.strptime('19:00', '%H:%M').time()),
@@ -473,11 +527,114 @@ class Schedule(models.Model):
                 return True
         return False
 
+    def validate_schedule(self, user, notes=''):
+        """
+        Valide l'horaire et met à jour l'historique de validation.
+        """
+        if self.status in ['validated', 'active']:
+            raise ValidationError("Cet horaire est déjà validé ou actif.")
+
+        validation_entry = {
+            'validated_by': user.id,
+            'validated_at': timezone.now().isoformat(),
+            'version': self.schedule_version,
+            'notes': notes
+        }
+
+        if isinstance(self.validation_history, list):
+            self.validation_history.append(validation_entry)
+        else:
+            self.validation_history = [validation_entry]
+
+        self.status = 'validated'
+        self.is_approved = True
+        self.approval_date = timezone.now()
+        self.approved_by = user
+        self.save()
+
+    def activate(self):
+        """
+        Active l'horaire et désactive les versions précédentes.
+        """
+        if not self.is_approved:
+            raise ValidationError("L'horaire doit être validé avant d'être activé.")
+        
+        # Désactiver les autres versions actives
+        Schedule.objects.filter(
+            route=self.route,
+            day_of_week=self.day_of_week,
+            is_current_version=True
+        ).exclude(id=self.id).update(
+            is_current_version=False,
+            status='archived'
+        )
+
+        self.status = 'active'
+        self.is_active = True
+        self.activation_date = timezone.now()
+        self.is_current_version = True
+        self.save()
+
+    def archive(self):
+        """
+        Archive l'horaire.
+        """
+        self.status = 'archived'
+        self.is_active = False
+        self.is_current_version = False
+        self.save()
+
+    def create_new_version(self):
+        """
+        Crée une nouvelle version de l'horaire.
+        """
+        new_schedule = Schedule.objects.get(pk=self.pk)
+        new_schedule.pk = None
+        new_schedule.schedule_version = f"v{int(self.schedule_version[1:]) + 1}" if self.schedule_version.startswith('v') else 'v2'
+        new_schedule.status = 'draft'
+        new_schedule.is_approved = False
+        new_schedule.approval_date = None
+        new_schedule.approved_by = None
+        new_schedule.is_current_version = False
+        new_schedule.save()
+        return new_schedule
+
     def clean(self):
+        """
+        Validation des données avant sauvegarde.
+        """
         if self.start_time >= self.end_time:
             raise ValidationError("L'heure de fin doit être après l'heure de début")
         if self.frequency <= 0:
             raise ValidationError("La fréquence doit être positive")
+        if self.start_date > self.end_date:
+            raise ValidationError("La date de début doit être avant la date de fin")
+        if self.peak_hours_frequency and self.peak_hours_frequency < 1:
+            raise ValidationError("La fréquence aux heures de pointe doit être positive")
+        if self.off_peak_frequency and self.off_peak_frequency < 1:
+            raise ValidationError("La fréquence hors pointe doit être positive")
+
+    def get_next_departure(self, from_time=None):
+        """
+        Trouve le prochain départ à partir d'une heure donnée.
+        """
+        if from_time is None:
+            from_time = timezone.now().time()
+
+        if not self.timepoints:
+            self.generate_timepoints_for_date(timezone.now().date())
+
+        for timepoint in self.timepoints:
+            departure_time = datetime.strptime(timepoint, '%H:%M:%S').time()
+            if departure_time > from_time:
+                return departure_time
+        return None
+
+    def get_validation_history(self):
+        """
+        Retourne l'historique des validations formaté.
+        """
+        return self.validation_history if isinstance(self.validation_history, list) else []
 
     def __str__(self):
         return f"{self.route.name} - {self.get_day_of_week_display()} ({self.start_time}-{self.end_time})"
@@ -673,8 +830,366 @@ class Driver(models.Model):
         # Logique pour vérifier la disponibilité
         pass
 
+class DriverSchedule(models.Model):
+    STATUS_CHOICES = [
+        ('scheduled', 'Planifié'),
+        ('in_progress', 'En cours'),
+        ('completed', 'Terminé'),
+        ('cancelled', 'Annulé'),
+        ('pending_approval', 'En attente d\'approbation'),
+        ('modified', 'Modifié')
+    ]
 
+    PRIORITY_CHOICES = [
+        ('low', 'Basse'),
+        ('medium', 'Moyenne'),
+        ('high', 'Haute'),
+        ('urgent', 'Urgente')
+    ]
 
+    # Relations de base
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, help_text="Chauffeur concerné par ce planning")
+    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, null=True, blank=True, 
+                                help_text="Ensemble de règles appliquées à ce planning")
+
+    # Informations temporelles
+    shift_start = models.DateTimeField(default=timezone.now, help_text="Début du shift du chauffeur")
+    shift_end = models.DateTimeField(default=timezone.now, help_text="Fin du shift du chauffeur")
+    actual_start_time = models.DateTimeField(default=timezone.now, blank=True, 
+                                           help_text="Heure réelle de début du shift")
+    actual_end_time = models.DateTimeField(default=timezone.now, blank=True, 
+                                         help_text="Heure réelle de fin du shift")
+
+    # Gestion des pauses et repos
+    breaks_scheduled = models.JSONField(default=dict, blank=True, 
+                                      help_text="Liste des pauses programmées (ex: {'pause1': '10:30-11:00'})")
+    rest_time_between_shifts = models.IntegerField(default=8, 
+                                                 help_text="Temps de repos minimum entre les shifts en heures")
+    
+    # Statuts et contrôles
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='scheduled', 
+                            help_text="Statut actuel du shift")
+    is_active = models.BooleanField(default=False, help_text="Le shift est-il actif en ce moment ?")
+    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='medium',
+                              help_text="Priorité du planning")
+
+    # Validation et conformité
+    validation_status = models.JSONField(default=dict, help_text="État des validations des règles")
+    compliance_notes = models.JSONField(default=dict, help_text="Notes de conformité aux règles")
+    rule_violations = models.JSONField(default=list, help_text="Liste des violations de règles détectées")
+
+    # Modifications et historique
+    modification_history = models.JSONField(default=list, help_text="Historique des modifications")
+    modified_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                  related_name='driver_schedule_modifications')
+    modification_reason = models.TextField(blank=True, help_text="Raison des modifications")
+
+    # Métadonnées
+    created_at = models.DateTimeField(default=timezone.now, help_text="Date de création du planning")
+    updated_at = models.DateTimeField(auto_now=True, help_text="Dernière mise à jour du planning")
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                 related_name='driver_schedule_creations')
+    notes = models.TextField(default="", blank=True, help_text="Notes additionnelles sur ce shift")
+
+    class Meta:
+        verbose_name = "Driver Schedule"
+        verbose_name_plural = "Driver Schedules"
+        unique_together = ('driver', 'shift_start', 'shift_end')
+        ordering = ['-shift_start', 'priority']
+
+    def __str__(self):
+        return f"Driver {self.driver} - {self.shift_start} to {self.shift_end}"
+
+    def start_shift(self):
+        """Démarre le shift et applique les règles de validation"""
+        rule_check = self.validate_rules('start_shift')
+        if rule_check['valid']:
+            self.status = 'in_progress'
+            self.is_active = True
+            self.actual_start_time = timezone.now()
+            self.log_modification('start_shift')
+            self.save()
+        return rule_check
+
+    def end_shift(self):
+        """Termine le shift et valide les règles de fin"""
+        rule_check = self.validate_rules('end_shift')
+        if rule_check['valid']:
+            self.status = 'completed'
+            self.is_active = False
+            self.actual_end_time = timezone.now()
+            self.log_modification('end_shift')
+            self.save()
+        return rule_check
+
+    def cancel_shift(self, reason):
+        """Annule le shift avec une raison"""
+        self.status = 'cancelled'
+        self.is_active = False
+        self.modification_reason = reason
+        self.log_modification('cancel_shift')
+        self.save()
+
+    def add_break(self, start_time, end_time):
+        """Ajoute une pause avec validation des règles"""
+        rule_check = self.validate_rules('add_break')
+        if rule_check['valid']:
+            break_count = len(self.breaks_scheduled) + 1
+            self.breaks_scheduled[f'pause{break_count}'] = f'{start_time}-{end_time}'
+            self.log_modification('add_break')
+            self.save()
+        return rule_check
+
+    def validate_rules(self, action_type):
+        """Valide les règles applicables pour une action donnée"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='scheduling')
+            validation_results = {
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            for rule in rules:
+                # Logique de validation des règles
+                pass
+            return validation_results
+        return {'valid': True, 'violations': [], 'warnings': []}
+
+    def log_modification(self, action_type):
+        """Enregistre une modification dans l'historique"""
+        modification = {
+            'action': action_type,
+            'timestamp': timezone.now().isoformat(),
+            'user': self.modified_by.username if self.modified_by else 'System',
+            'reason': self.modification_reason
+        }
+        if isinstance(self.modification_history, list):
+            self.modification_history.append(modification)
+        else:
+            self.modification_history = [modification]
+
+    def is_shift_overdue(self):
+        """Vérifie si le shift est en retard"""
+        return timezone.now() > self.shift_end and self.status != 'completed'
+
+    def get_shift_duration(self):
+        """Calcule la durée du shift"""
+        if self.actual_end_time and self.actual_start_time:
+            return self.actual_end_time - self.actual_start_time
+        elif self.actual_start_time:
+            return timezone.now() - self.actual_start_time
+        return None
+
+class DriverVehicleAssignment(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('active', 'Actif'),
+        ('completed', 'Terminé'),
+        ('cancelled', 'Annulé'),
+        ('pending_approval', 'En attente d\'approbation'),
+        ('maintenance_required', 'Maintenance requise'),
+        ('suspended', 'Suspendu')
+    ]
+
+    PRIORITY_LEVELS = [
+        ('low', 'Basse'),
+        ('medium', 'Moyenne'),
+        ('high', 'Haute'),
+        ('urgent', 'Urgente')
+    ]
+
+    ASSIGNMENT_TYPE = [
+        ('regular', 'Régulier'),
+        ('temporary', 'Temporaire'),
+        ('emergency', 'Urgence'),
+        ('training', 'Formation')
+    ]
+
+    # Relations principales
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, 
+                             help_text="Chauffeur assigné")
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, 
+                              help_text="Véhicule assigné")
+    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, null=True, blank=True,
+                                help_text="Ensemble de règles appliquées à cette affectation")
+
+    # Informations temporelles
+    assigned_from = models.DateTimeField(default=timezone.now,
+                                       help_text="Date et heure de début de l'affectation")
+    assigned_until = models.DateTimeField(default=timezone.now,
+                                        help_text="Date et heure de fin de l'affectation")
+    actual_start = models.DateTimeField(null=True, blank=True,
+                                      help_text="Date et heure réelle de début")
+    actual_end = models.DateTimeField(null=True, blank=True,
+                                    help_text="Date et heure réelle de fin")
+
+    # Caractéristiques de l'affectation
+    assignment_type = models.CharField(max_length=20, choices=ASSIGNMENT_TYPE, 
+                                     default='regular')
+    priority = models.CharField(max_length=20, choices=PRIORITY_LEVELS, 
+                              default='medium')
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, 
+                            default='pending')
+
+    # Validation et conformité
+    validation_status = models.JSONField(
+        default=dict,
+        help_text="État des validations des règles"
+    )
+    rule_violations = models.JSONField(
+        default=list,
+        help_text="Liste des violations de règles détectées"
+    )
+    compliance_checks = models.JSONField(
+        default=dict,
+        help_text="Résultats des vérifications de conformité"
+    )
+
+    # Suivi des modifications
+    modification_history = models.JSONField(
+        default=list,
+        help_text="Historique des modifications"
+    )
+    modified_by = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='vehicle_assignment_modifications'
+    )
+    modification_reason = models.TextField(
+        blank=True,
+        help_text="Raison des modifications"
+    )
+
+    # Métadonnées
+    notes = models.TextField(blank=True, default="",
+                           help_text="Notes additionnelles")
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='vehicle_assignment_creations'
+    )
+
+    class Meta:
+        verbose_name = "Driver-Vehicle Assignment"
+        verbose_name_plural = "Driver-Vehicle Assignments"
+        unique_together = ('driver', 'vehicle', 'assigned_from')
+        ordering = ['-assigned_from', 'priority']
+
+    def __str__(self):
+        return f"{self.driver} assigned to {self.vehicle} ({self.assigned_from} to {self.assigned_until})"
+
+    def validate_rules(self, action_type):
+        """Valide les règles applicables pour une action donnée"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='assignment')
+            validation_results = {
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            return validation_results
+        return {'valid': True, 'violations': [], 'warnings': []}
+
+    def log_modification(self, action_type, reason=''):
+        """Enregistre une modification dans l'historique"""
+        modification = {
+            'action': action_type,
+            'timestamp': timezone.now().isoformat(),
+            'user': self.modified_by.username if self.modified_by else 'System',
+            'reason': reason or self.modification_reason
+        }
+        if isinstance(self.modification_history, list):
+            self.modification_history.append(modification)
+        else:
+            self.modification_history = [modification]
+
+    def start_assignment(self):
+        """Démarre l'affectation avec validation des règles"""
+        rule_check = self.validate_rules('start_assignment')
+        if rule_check['valid']:
+            self.status = 'active'
+            self.actual_start = timezone.now()
+            self.log_modification('start_assignment')
+            self.save()
+        return rule_check
+
+    def end_assignment(self):
+        """Termine l'affectation avec validation"""
+        rule_check = self.validate_rules('end_assignment')
+        if rule_check['valid']:
+            self.status = 'completed'
+            self.actual_end = timezone.now()
+            self.log_modification('end_assignment')
+            self.save()
+        return rule_check
+
+    def cancel_assignment(self, reason=''):
+        """Annule l'affectation avec raison"""
+        self.status = 'cancelled'
+        self.log_modification('cancel_assignment', reason)
+        self.save()
+
+    def suspend_assignment(self, reason=''):
+        """Suspend l'affectation temporairement"""
+        self.status = 'suspended'
+        self.log_modification('suspend_assignment', reason)
+        self.save()
+
+    def is_active(self):
+        """Vérifie si l'affectation est active"""
+        now = timezone.now()
+        return (self.status == 'active' and 
+                self.assigned_from <= now <= self.assigned_until)
+
+    def is_overdue(self):
+        """Vérifie si l'affectation est en retard"""
+        return (timezone.now() > self.assigned_until and 
+                self.status not in ['completed', 'cancelled'])
+
+    def get_duration(self):
+        """Calcule la durée de l'affectation"""
+        if self.actual_end and self.actual_start:
+            return self.actual_end - self.actual_start
+        elif self.actual_start:
+            return timezone.now() - self.actual_start
+        return None
+
+    def extend_assignment(self, new_end_time):
+        """Prolonge l'affectation avec validation"""
+        if new_end_time <= self.assigned_until:
+            raise ValueError("New end time must be later than the current end time.")
+            
+        rule_check = self.validate_rules('extend_assignment')
+        if rule_check['valid']:
+            self.assigned_until = new_end_time
+            self.log_modification('extend_assignment')
+            self.save()
+        return rule_check
+
+    @classmethod
+    def get_current_assignment(cls, driver):
+        """Récupère l'affectation active actuelle pour un chauffeur"""
+        now = timezone.now()
+        return cls.objects.filter(
+            driver=driver,
+            assigned_from__lte=now,
+            assigned_until__gte=now,
+            status='active'
+        ).first()
+
+    def check_vehicle_maintenance(self):
+        """Vérifie si le véhicule nécessite une maintenance"""
+        # Logique de vérification de la maintenance
+        pass
+
+    def validate_driver_eligibility(self):
+        """Vérifie l'éligibilité du chauffeur pour ce véhicule"""
+        # Logique de validation de l'éligibilité
+        pass
 
 
 

@@ -259,26 +259,38 @@ class ScheduleautomatSerializer(serializers.ModelSerializer):
         if data['start_date'] > data['end_date']:
             raise serializers.ValidationError("La date de début doit être avant la date de fin.")
         return data
-class ScheduleautomaExceptionSerializer(serializers.ModelSerializer):
-    schedule = serializers.PrimaryKeyRelatedField(queryset=Schedule.objects.all())
-    affected_routes = serializers.PrimaryKeyRelatedField(many=True, queryset=Route.objects.all(), required=False)
-
+class ScheduleautomatSerializer(serializers.ModelSerializer):
+    validation_history = serializers.JSONField(read_only=True)
+    route_name = serializers.CharField(source='route.name', read_only=True)
+    current_status = serializers.CharField(source='get_status_display', read_only=True)
+    
     class Meta:
-        model = ScheduleException
-        fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
-
-    def create(self, validated_data):
-        user = self.context['request'].user
-        validated_data['created_by'] = user
-        exception = super().create(validated_data)
-        # Régénérer les horaires pour la date de l'exception
-        exception.schedule.generate_timepoints_for_date(exception.exception_date)
-        return exception
+        model = Schedule
+        fields = [
+            'id', 'route', 'route_name', 'schedule_code', 'schedule_version',
+            'season', 'day_of_week', 'start_date', 'end_date',
+            'holiday_schedule', 'start_time', 'end_time', 'frequency',
+            'rush_hour_adjustment', 'minimum_layover',
+            'weather_adjustment', 'special_event_adjustment',
+            'peak_hours_frequency', 'off_peak_frequency',
+            'is_active', 'is_approved', 'approval_date', 'approved_by',
+            'notes', 'timepoints', 'created_at', 'updated_at', 'created_by',
+            'status', 'is_current_version', 'validation_history',
+            'activation_date', 'current_status'
+        ]
+        read_only_fields = [
+            'id', 'is_approved', 'approval_date', 'approved_by',
+            'created_at', 'updated_at', 'created_by', 'timepoints',
+            'validation_history', 'is_current_version', 'activation_date'
+        ]
 
     def validate(self, data):
-        if data['exception_date'] < timezone.now().date():
-            raise serializers.ValidationError("La date d'exception doit être aujourd'hui ou future.")
+        if data.get('start_time') >= data.get('end_time'):
+            raise serializers.ValidationError("L'heure de fin doit être après l'heure de début.")
+        if data.get('frequency', 0) <= 0:
+            raise serializers.ValidationError("La fréquence doit être positive.")
+        if data.get('start_date') > data.get('end_date'):
+            raise serializers.ValidationError("La date de début doit être avant la date de fin.")
         return data
 
 class DriverSerializer(serializers.ModelSerializer):
@@ -416,3 +428,4 @@ class ResourceAvailabilitySerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
         return instance
+    

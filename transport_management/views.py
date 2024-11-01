@@ -4,6 +4,10 @@ from rest_framework import viewsets, filters, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.core.cache import cache
+from rest_framework.exceptions import ValidationError
+from django.utils import timezone
+from django.db import transaction
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import (
     OperationalRule, RuleExecution, RuleParameter, RuleSet, Destination,
@@ -18,7 +22,11 @@ from .serializers import (
     RouteitinineraireSerializer, DestinationitinineraireSerializer, StoparretSerializer, RouteStoparretSerializer,
     ScheduleautomatSerializer, ScheduleautomaExceptionSerializer, DriverSerializer, ResourceAvailabilitySerializer
 )
+import logging
 
+logger = logging.getLogger(__name__)
+
+SCHEDULE_LOCK_TIMEOUT = 300  # 5 minutes
 # ViewSet for OperationalRule model
 class OperationalRulecViewSet(viewsets.ModelViewSet):
     queryset = OperationalRule.objects.all()
@@ -171,28 +179,184 @@ class SchedulesetupViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        # Filter to show only today's schedules
         today = timezone.now().date()
-        return queryset.filter(
+        
+        # Filtres de base
+        queryset = queryset.filter(
             start_date__lte=today,
             end_date__gte=today,
             day_of_week=today.strftime('%A').lower(),
             is_active=True
         )
 
+        # Filtres supplémentaires
+        status_param = self.request.query_params.get('status')
+        route = self.request.query_params.get('route')
+        season = self.request.query_params.get('season')
+        is_current = self.request.query_params.get('is_current')
+
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+        if route:
+            queryset = queryset.filter(route_id=route)
+        if season:
+            queryset = queryset.filter(season=season)
+        if is_current is not None:
+            queryset = queryset.filter(is_current_version=is_current.lower() == 'true')
+
+        return queryset.select_related('route', 'approved_by', 'created_by')
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            lock_id = f"schedule_update_{serializer.instance.id}"
+            if not cache.add(lock_id, True, SCHEDULE_LOCK_TIMEOUT):
+                raise ValidationError("L'horaire est en cours de modification.")
+            try:
+                serializer.save()
+            finally:
+                cache.delete(lock_id)
+
+    def perform_destroy(self, instance):
+        lock_id = f"schedule_delete_{instance.id}"
+        if not cache.add(lock_id, True, SCHEDULE_LOCK_TIMEOUT):
+            raise ValidationError("L'horaire est en cours de suppression.")
+        try:
+            instance.is_active = False
+            instance.status = 'archived'
+            instance.save()
+        finally:
+            cache.delete(lock_id)
+
     @action(detail=True, methods=['post'])
     def validate_schedule(self, request, pk=None):
-        """
-        Action to validate a schedule.
-        """
+        lock_id = f"schedule_validate_{pk}"
+        if not cache.add(lock_id, True, SCHEDULE_LOCK_TIMEOUT):
+            return Response(
+                {'detail': 'Validation en cours.'},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        try:
+            with transaction.atomic():
+                schedule = self.get_object()
+                
+                if schedule.is_approved:
+                    return Response(
+                        {'detail': 'Horaire déjà approuvé.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # Validation de l'horaire
+                schedule.is_approved = True
+                schedule.approval_date = timezone.now()
+                schedule.approved_by = request.user
+                schedule.status = 'validated'
+
+                # Activation automatique si la date est aujourd'hui ou future
+                if schedule.start_date <= timezone.now().date():
+                    schedule.status = 'active'
+                    schedule.is_current_version = True
+                    generate_daily_schedules.delay()
+
+                schedule.save()
+                logger.info(f"Horaire {pk} validé par {request.user}")
+
+                return Response({
+                    'detail': 'Horaire validé avec succès.',
+                    'status': schedule.status
+                })
+
+        except Exception as e:
+            logger.error(f"Erreur lors de la validation: {str(e)}")
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        finally:
+            cache.delete(lock_id)
+
+    @action(detail=True, methods=['post'])
+    def activate_schedule(self, request, pk=None):
+        lock_id = f"schedule_activate_{pk}"
+        if not cache.add(lock_id, True, SCHEDULE_LOCK_TIMEOUT):
+            return Response(
+                {'detail': 'Activation en cours.'},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        try:
+            schedule = self.get_object()
+            if not schedule.is_approved:
+                return Response(
+                    {'detail': 'Validation requise avant activation.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            schedule.status = 'active'
+            schedule.is_current_version = True
+            schedule.save()
+            
+            generate_daily_schedules.delay()
+            logger.info(f"Horaire {pk} activé par {request.user}")
+            
+            return Response({'detail': 'Horaire activé avec succès.'})
+
+        except Exception as e:
+            logger.error(f"Erreur lors de l'activation: {str(e)}")
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        finally:
+            cache.delete(lock_id)
+
+    @action(detail=False, methods=['get'])
+    def active_schedules(self, request):
+        active_schedules = self.get_queryset().filter(
+            status='active',
+            is_current_version=True
+        )
+        serializer = self.get_serializer(active_schedules, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def timepoints(self, request, pk=None):
         schedule = self.get_object()
-        if schedule.is_approved:
-            return Response({'detail': 'This schedule is already approved.'}, status=status.HTTP_400_BAD_REQUEST)
-        schedule.is_approved = True
-        schedule.approval_date = timezone.now()
-        schedule.approved_by = request.user
-        schedule.save()
-        return Response({'detail': 'Schedule successfully validated.'}, status=status.HTTP_200_OK)
+        date_str = request.query_params.get('date')
+        
+        try:
+            date = (
+                timezone.datetime.strptime(date_str, '%Y-%m-%d').date()
+                if date_str else timezone.now().date()
+            )
+            schedule.generate_timepoints_for_date(date)
+            
+            return Response({
+                'schedule_id': schedule.id,
+                'date': date,
+                'timepoints': schedule.timepoints
+            })
+            
+        except ValueError:
+            return Response(
+                {'error': 'Format de date invalide (YYYY-MM-DD)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=False, methods=['get'])
+    def statistics(self, request):
+        return Response({
+            'total': Schedule.objects.count(),
+            'active': Schedule.objects.filter(status='active').count(),
+            'pending': Schedule.objects.filter(status='pending').count(),
+            'last_update': timezone.now()
+        })
+    
+    
+    
 
 # ViewSet for managing ScheduleException with additional functionalities
 class ScheduleExceptionsetupViewSet(viewsets.ModelViewSet):
@@ -359,3 +523,4 @@ class ResourceAvailabilityViewSet(viewsets.ModelViewSet):
             count=Count('id')
         ).filter(count__gt=1)
         return Response({'conflicts': list(conflicts)}, status=status.HTTP_200_OK)
+
