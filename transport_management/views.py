@@ -20,7 +20,7 @@ from .serializers import (
     RuleSetSerializercrud, DestinationSerializercrud, RouteSerializercrud, StopSerializercrud,
     ScheduleSerializercrud, ResourceAvailabilitySerializercrud, DriverSerializercrud, DestinationSerializer,
     RouteitinineraireSerializer, DestinationitinineraireSerializer, StoparretSerializer, RouteStoparretSerializer,
-    ScheduleautomatSerializer, ScheduleautomaExceptionSerializer, DriverSerializer, ResourceAvailabilitySerializer
+    ScheduleautomatSerializer, ScheduleExceptionSerializercrud, DriverSerializer, ResourceAvailabilitySerializer
 )
 import logging
 
@@ -361,7 +361,7 @@ class SchedulesetupViewSet(viewsets.ModelViewSet):
 # ViewSet for managing ScheduleException with additional functionalities
 class ScheduleExceptionsetupViewSet(viewsets.ModelViewSet):
     queryset = ScheduleException.objects.all()
-    serializer_class = ScheduleautomaExceptionSerializer
+    serializer_class = ScheduleExceptionSerializercrud
     permission_classes = [IsAuthenticated]
 
 # ViewSet for managing Driver with additional functionalities

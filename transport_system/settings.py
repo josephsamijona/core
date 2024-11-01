@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 import os
+import stat
 import environ
 from pathlib import Path
 from datetime import timedelta
@@ -264,6 +265,33 @@ USE_TZ = True
 TIME_ZONE = 'America/New_York'  # Ou votre fuseau horaire local
 
 LOG_DIRECTORY = os.path.join(BASE_DIR, 'logs')
+
+if not os.path.exists(LOG_DIRECTORY):
+    os.makedirs(LOG_DIRECTORY)
+def setup_logging_directory():
+    logs_dir = Path(BASE_DIR) / 'logs'
+    try:
+        # Créer le dossier avec les bonnes permissions
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # S'assurer que le fichier de log existe et a les bonnes permissions
+        log_file = logs_dir / 'transport_management.log'
+        if not log_file.exists():
+            log_file.touch()
+            
+        # Définir les permissions (644 pour le fichier)
+        os.chmod(log_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        
+        return str(log_file)
+    except Exception as e:
+        # Fallback vers un emplacement temporaire si nécessaire
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        return os.path.join(temp_dir, 'transport_management.log')
+
+
+
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

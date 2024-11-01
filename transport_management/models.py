@@ -7,6 +7,8 @@ from django.core.exceptions import ValidationError
 from inventory_management.models import Vehicle
 from membership_management.models import CardInfo
 from datetime import timedelta, time, datetime, date
+from django.core.validators import MinValueValidator, MaxValueValidator
+import uuid
 
 User = get_user_model()
 
@@ -1192,76 +1194,2065 @@ class DriverVehicleAssignment(models.Model):
         pass
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+class Trip(models.Model):
+    STATUS_CHOICES = [
+        ('planned', 'Planifié'),
+        ('in_progress', 'En cours'),
+        ('completed', 'Terminé'),
+        ('cancelled', 'Annulé'),
+        ('delayed', 'Retardé'),
+        ('interrupted', 'Interrompu'),
+        ('rescheduled', 'Reprogrammé')
+    ]
+
+    TRIP_TYPE_CHOICES = [
+        ('regular', 'Régulier'),
+        ('express', 'Express'),
+        ('shuttle', 'Navette'),
+        ('special', 'Spécial'),
+        ('emergency', 'Urgence')
+    ]
+
+    PRIORITY_CHOICES = [
+        ('low', 'Basse'),
+        ('medium', 'Moyenne'),
+        ('high', 'Haute'),
+        ('urgent', 'Urgente')
+    ]
+
+    # Relations principales
+    destination = models.ForeignKey(Destination, on_delete=models.CASCADE)
+    route = models.ForeignKey(Route, on_delete=models.CASCADE)
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='trips_as_driver')
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE)
+    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, null=True, 
+                                help_text="Ensemble de règles appliquées à ce voyage")
+
+    # Informations temporelles
+    trip_date = models.DateTimeField(default=timezone.now, help_text="Date et heure du voyage")
+    planned_departure = models.DateTimeField(help_text="Heure de départ prévue")
+    planned_arrival = models.DateTimeField(help_text="Heure d'arrivée prévue")
+    departure_time = models.DateTimeField(null=True, blank=True, help_text="Heure de départ réelle")
+    arrival_time = models.DateTimeField(null=True, blank=True, help_text="Heure d'arrivée réelle")
+    actual_start_time = models.DateTimeField(null=True, blank=True)
+    actual_end_time = models.DateTimeField(null=True, blank=True)
+
+    # Caractéristiques du voyage
+    origin = models.CharField(max_length=255, help_text="Lieu de départ")
+    passenger_count = models.PositiveIntegerField(default=0, help_text="Nombre de passagers")
+    max_capacity = models.PositiveIntegerField(help_text="Capacité maximale")
+    trip_type = models.CharField(max_length=20, choices=TRIP_TYPE_CHOICES, default='regular')
+    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='medium')
+
+    # Statut et suivi
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='planned')
+    delay_duration = models.DurationField(null=True, blank=True, help_text="Durée du retard")
+    real_time_incidents = models.JSONField(default=list, help_text="Incidents survenus")
+    weather_conditions = models.JSONField(default=dict, help_text="Conditions météo")
+    traffic_conditions = models.JSONField(default=dict, help_text="Conditions de circulation")
+
+    # Validation et conformité
+    validation_status = models.JSONField(default=dict, help_text="État des validations")
+    rule_violations = models.JSONField(default=list, help_text="Violations de règles")
+    safety_checks = models.JSONField(default=dict, help_text="Vérifications de sécurité")
+
+    # Suivi des modifications
+    modification_history = models.JSONField(default=list, help_text="Historique des modifications")
+    modified_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                  related_name='trip_modifications')
+    modification_reason = models.TextField(blank=True)
+
+    # Métadonnées
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                 related_name='trips_created')
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "Trip"
+        verbose_name_plural = "Trips"
+        ordering = ['-trip_date', 'priority']
+
+    def __str__(self):
+        return f"Trip {self.id} - {self.trip_date} - {self.route.name}"
+
+    def validate_rules(self, action_type):
+        """Valide les règles applicables pour une action donnée"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='trip')
+            validation_results = {
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            return validation_results
+        return {'valid': True, 'violations': [], 'warnings': []}
+
+    def log_modification(self, action_type, reason=''):
+        """Enregistre une modification dans l'historique"""
+        modification = {
+            'action': action_type,
+            'timestamp': timezone.now().isoformat(),
+            'user': self.modified_by.username if self.modified_by else 'System',
+            'reason': reason or self.modification_reason
+        }
+        if isinstance(self.modification_history, list):
+            self.modification_history.append(modification)
+        else:
+            self.modification_history = [modification]
+
+    def start_trip(self):
+        """Démarre le voyage avec validation des règles"""
+        rule_check = self.validate_rules('start_trip')
+        if rule_check['valid']:
+            self.status = 'in_progress'
+            self.departure_time = timezone.now()
+            self.actual_start_time = timezone.now()
+            self.log_modification('start_trip')
+            self.save()
+        return rule_check
+
+    def end_trip(self):
+        """Termine le voyage avec validation"""
+        rule_check = self.validate_rules('end_trip')
+        if rule_check['valid']:
+            self.status = 'completed'
+            self.arrival_time = timezone.now()
+            self.actual_end_time = timezone.now()
+            self.log_modification('end_trip')
+            self.save()
+        return rule_check
+
+    def cancel_trip(self, reason=''):
+        """Annule le voyage avec raison"""
+        self.status = 'cancelled'
+        self.log_modification('cancel_trip', reason)
+        self.save()
+
+    def add_incident(self, incident_description, severity='medium'):
+        """Ajoute un incident avec plus de détails"""
+        incident = {
+            'description': incident_description,
+            'timestamp': timezone.now().isoformat(),
+            'severity': severity,
+            'status': 'open'
+        }
+        if isinstance(self.real_time_incidents, list):
+            self.real_time_incidents.append(incident)
+        else:
+            self.real_time_incidents = [incident]
+        self.log_modification('add_incident')
+        self.save()
+
+    def increment_passenger_count(self):
+        """Incrémente le nombre de passagers avec vérification de capacité"""
+        if self.passenger_count < self.max_capacity:
+            self.passenger_count += 1
+            self.log_modification('increment_passenger')
+            self.save()
+        else:
+            raise ValueError("Maximum capacity reached")
+
+    def update_delay(self, delay_minutes):
+        """Met à jour le retard du voyage"""
+        self.delay_duration = timedelta(minutes=delay_minutes)
+        if delay_minutes > 0:
+            self.status = 'delayed'
+        self.log_modification('update_delay')
+        self.save()
+
+    def get_trip_duration(self):
+        """Calcule la durée du voyage"""
+        if self.actual_end_time and self.actual_start_time:
+            return self.actual_end_time - self.actual_start_time
+        return None
+
+    def check_safety_requirements(self):
+        """Vérifie les exigences de sécurité"""
+        # Logique de vérification de sécurité
+        pass
+
+    def update_weather_conditions(self, conditions):
+        """Met à jour les conditions météo"""
+        self.weather_conditions.update(conditions)
+        self.save()
+
+
+class PassengerTrip(models.Model):
+    BOARDING_STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('checked_in', 'Enregistré'),
+        ('boarded', 'À Bord'),
+        ('boarding_failed', 'Échec Embarquement'),
+        ('off_board', 'Descendu'),
+        ('no_show', 'Non présenté'),
+        ('cancelled', 'Annulé')
+    ]
+
+    PASSENGER_TYPE_CHOICES = [
+        ('regular', 'Régulier'),
+        ('student', 'Étudiant'),
+        ('senior', 'Senior'),
+        ('disabled', 'PMR'),
+        ('child', 'Enfant'),
+        ('vip', 'VIP')
+    ]
+
+    PAYMENT_STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('paid', 'Payé'),
+        ('refunded', 'Remboursé'),
+        ('failed', 'Échoué')
+    ]
+
+    # Relations principales
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, 
+                           help_text="Lien vers le trajet concerné")
+    passenger = models.ForeignKey(User, on_delete=models.CASCADE, 
+                                help_text="Le passager lié à ce voyage")
+    boarding_stop = models.ForeignKey(Stop, on_delete=models.CASCADE, 
+                                    related_name='boarding_trips')
+    alighting_stop = models.ForeignKey(Stop, on_delete=models.CASCADE, 
+                                     related_name='alighting_trips', 
+                                     null=True, blank=True)
+    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, 
+                                null=True, blank=True,
+                                help_text="Règles appliquées à ce voyage passager")
+
+    # Informations temporelles
+    boarding_time = models.DateTimeField(null=True, blank=True)
+    departure_time = models.DateTimeField(null=True, blank=True)
+    arrival_time = models.DateTimeField(null=True, blank=True)
+    check_in_time = models.DateTimeField(null=True, blank=True)
+
+    # Statuts
+    status = models.CharField(max_length=20, default='pending')
+    boarding_status = models.CharField(max_length=50, 
+                                     choices=BOARDING_STATUS_CHOICES, 
+                                     default='pending')
+    passenger_type = models.CharField(max_length=20, 
+                                    choices=PASSENGER_TYPE_CHOICES, 
+                                    default='regular')
+    payment_status = models.CharField(max_length=20, 
+                                    choices=PAYMENT_STATUS_CHOICES, 
+                                    default='pending')
+
+    # Informations de voyage
+    seat_number = models.CharField(max_length=10, blank=True, default="")
+    special_needs = models.JSONField(default=dict, 
+                                   help_text="Besoins spéciaux détaillés")
+    luggage_info = models.JSONField(default=dict, 
+                                  help_text="Informations sur les bagages")
+    fare_paid = models.DecimalField(max_digits=10, decimal_places=2, 
+                                  default=0.00)
+    ticket_number = models.CharField(max_length=50, unique=True, null=True)
+
+    # Validation et conformité
+    validation_status = models.JSONField(default=dict)
+    rule_violations = models.JSONField(default=list)
+    boarding_failure_reason = models.TextField(blank=True, default="")
+
+    # Retour d'expérience
+    feedback = models.JSONField(default=dict)
+    satisfaction_rating = models.IntegerField(null=True, blank=True)
+    incident_reports = models.JSONField(default=list)
+
+    # Historique et modifications
+    modification_history = models.JSONField(default=list)
+    modified_by = models.ForeignKey(User, on_delete=models.SET_NULL, 
+                                  null=True, 
+                                  related_name='passenger_trip_modifications')
+    
+    # Métadonnées
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, 
+                                 null=True, 
+                                 related_name='passenger_trips_created')
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        verbose_name = "Passenger Trip"
+        verbose_name_plural = "Passenger Trips"
+        unique_together = ('trip', 'passenger')
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.passenger.username} on Trip {self.trip.id}"
+
+    def validate_rules(self, action_type):
+        """Valide les règles applicables"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='passenger_trip')
+            validation_results = {
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            return validation_results
+        return {'valid': True, 'violations': [], 'warnings': []}
+
+    def log_modification(self, action_type, reason=''):
+        """Enregistre une modification"""
+        modification = {
+            'action': action_type,
+            'timestamp': timezone.now().isoformat(),
+            'user': self.modified_by.username if self.modified_by else 'System',
+            'reason': reason
+        }
+        if isinstance(self.modification_history, list):
+            self.modification_history.append(modification)
+        else:
+            self.modification_history = [modification]
+
+    def check_in(self):
+        """Enregistre le passager"""
+        rule_check = self.validate_rules('check_in')
+        if rule_check['valid']:
+            self.boarding_status = 'checked_in'
+            self.check_in_time = timezone.now()
+            self.log_modification('check_in')
+            self.save()
+        return rule_check
+
+    def board_passenger(self):
+        """Embarque le passager"""
+        rule_check = self.validate_rules('board')
+        if rule_check['valid']:
+            self.boarding_status = 'boarded'
+            self.boarding_time = timezone.now()
+            self.log_modification('board')
+            self.save()
+        return rule_check
+
+    def fail_boarding(self, reason):
+        """Enregistre un échec d'embarquement"""
+        self.boarding_status = 'boarding_failed'
+        self.boarding_failure_reason = reason
+        self.log_modification('boarding_failed', reason)
+        self.save()
+
+    def disembark_passenger(self):
+        """Débarque le passager"""
+        rule_check = self.validate_rules('disembark')
+        if rule_check['valid']:
+            self.boarding_status = 'off_board'
+            self.arrival_time = timezone.now()
+            self.log_modification('disembark')
+            self.save()
+        return rule_check
+
+    def mark_no_show(self, reason=''):
+        """Marque le passager comme non présent"""
+        self.boarding_status = 'no_show'
+        self.log_modification('no_show', reason)
+        self.save()
+
+    def add_feedback(self, feedback_data):
+        """Ajoute un retour d'expérience structuré"""
+        self.feedback = {
+            'timestamp': timezone.now().isoformat(),
+            'content': feedback_data,
+            'submitted_by': self.passenger.username
+        }
+        self.log_modification('add_feedback')
+        self.save()
+
+    def report_incident(self, incident_data):
+        """Enregistre un incident"""
+        incident = {
+            'timestamp': timezone.now().isoformat(),
+            'details': incident_data,
+            'status': 'reported'
+        }
+        if isinstance(self.incident_reports, list):
+            self.incident_reports.append(incident)
+        else:
+            self.incident_reports = [incident]
+        self.log_modification('report_incident')
+        self.save()
+
+    def get_trip_duration(self):
+        """Calcule la durée du voyage"""
+        if self.arrival_time and self.departure_time:
+            return self.arrival_time - self.departure_time
+        return None
+
+    def is_trip_completed(self):
+        """Vérifie si le voyage est terminé"""
+        return self.boarding_status == 'off_board' and self.arrival_time is not None
+
+    @classmethod
+    def get_active_trips_for_passenger(cls, passenger):
+        """Récupère les voyages actifs d'un passager"""
+        return cls.objects.filter(
+            passenger=passenger, 
+            boarding_status='boarded'
+        )
+
+    @classmethod
+    def get_trip_history_for_passenger(cls, passenger):
+        """Récupère l'historique des voyages d'un passager"""
+        return cls.objects.filter(passenger=passenger).order_by('-created_at')
+
+
+class Incident(models.Model):
+    INCIDENT_TYPE_CHOICES = [
+        ('accident', 'Accident'),
+        ('delay', 'Retard'),
+        ('mechanical_failure', 'Panne mécanique'),
+        ('passenger_complaint', 'Plainte passager'),
+        ('security', 'Incident de sécurité'),
+        ('medical', 'Urgence médicale'),
+        ('weather_related', 'Lié à la météo'),
+        ('traffic', 'Incident de circulation'),
+        ('staff', 'Incident lié au personnel'),
+        ('other', 'Autre'),
+    ]
+
+    SEVERITY_LEVELS = [
+        ('minor', 'Mineur'),
+        ('moderate', 'Modéré'),
+        ('major', 'Majeur'),
+        ('critical', 'Critique'),
+        ('emergency', 'Urgence')
+    ]
+
+    PRIORITY_LEVELS = [
+        ('low', 'Basse'),
+        ('medium', 'Moyenne'),
+        ('high', 'Haute'),
+        ('urgent', 'Urgente')
+    ]
+
+    # Relations principales
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='incidents')
+    reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                  related_name='reported_incidents')
+    assigned_to = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                  related_name='assigned_incidents')
+    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, null=True, 
+                                help_text="Règles de gestion des incidents")
+
+    # Informations de base
+    incident_id = models.CharField(max_length=50, unique=True)
+    type = models.CharField(max_length=50, choices=INCIDENT_TYPE_CHOICES, default='other')
+    severity = models.CharField(max_length=20, choices=SEVERITY_LEVELS, default='minor')
+    priority = models.CharField(max_length=20, choices=PRIORITY_LEVELS, default='medium')
+    date = models.DateTimeField(default=timezone.now)
+    location = models.JSONField(default=dict, help_text="Localisation détaillée de l'incident")
+
+    # Description et détails
+    description = models.TextField()
+    detailed_report = models.JSONField(default=dict)
+    affected_assets = models.JSONField(default=list)
+    witnesses = models.JSONField(default=list)
+    evidence = models.JSONField(default=list)
+
+    # Statut et résolution
+    status = models.CharField(max_length=50, choices=[
+        ('reported', 'Signalé'),
+        ('under_investigation', 'En cours d\'investigation'),
+        ('action_required', 'Action requise'),
+        ('in_progress', 'En cours de résolution'),
+        ('resolved', 'Résolu'),
+        ('closed', 'Clôturé'),
+        ('reopened', 'Réouvert')
+    ], default='reported')
+    
+    resolved = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution_details = models.JSONField(default=dict)
+    resolution_cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # Suivi et validation
+    validation_status = models.JSONField(default=dict)
+    rule_violations = models.JSONField(default=list)
+    follow_up_actions = models.JSONField(default=list)
+    preventive_measures = models.JSONField(default=list)
+
+    # Historique et modifications
+    modification_history = models.JSONField(default=list)
+    modified_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                  related_name='incident_modifications')
+
+    # Métadonnées
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                 related_name='incidents_created')
+
+    class Meta:
+        verbose_name = "Incident"
+        verbose_name_plural = "Incidents"
+        ordering = ['-date', 'priority']
+
+    def __str__(self):
+        return f"Incident {self.incident_id} - {self.get_type_display()} ({self.date})"
+
+    def generate_incident_id(self):
+        """Génère un ID unique pour l'incident"""
+        prefix = self.type[:3].upper()
+        timestamp = timezone.now().strftime('%Y%m%d%H%M')
+        return f"{prefix}-{timestamp}-{str(self.id).zfill(4)}"
+
+    def save(self, *args, **kwargs):
+        if not self.incident_id:
+            super().save(*args, **kwargs)
+            self.incident_id = self.generate_incident_id()
+        super().save(*args, **kwargs)
+
+    def validate_rules(self, action_type):
+        """Valide les règles applicables"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='incident')
+            validation_results = {
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            return validation_results
+        return {'valid': True, 'violations': [], 'warnings': []}
+
+    def log_modification(self, action_type, reason=''):
+        """Enregistre une modification"""
+        modification = {
+            'action': action_type,
+            'timestamp': timezone.now().isoformat(),
+            'user': self.modified_by.username if self.modified_by else 'System',
+            'reason': reason
+        }
+        if isinstance(self.modification_history, list):
+            self.modification_history.append(modification)
+        else:
+            self.modification_history = [modification]
+
+    def mark_as_resolved(self, resolution_details, cost=None):
+        """Marque l'incident comme résolu avec détails"""
+        rule_check = self.validate_rules('resolve')
+        if rule_check['valid']:
+            self.resolved = True
+            self.resolved_at = timezone.now()
+            self.status = 'resolved'
+            self.resolution_details = {
+                'details': resolution_details,
+                'resolved_at': timezone.now().isoformat(),
+                'resolved_by': self.modified_by.username if self.modified_by else 'System'
+            }
+            if cost:
+                self.resolution_cost = cost
+            self.log_modification('resolve')
+            self.save()
+        return rule_check
+
+    def escalate(self, reason):
+        """Escalade l'incident"""
+        self.priority = 'urgent'
+        self.log_modification('escalate', reason)
+        self.save()
+
+    def add_follow_up_action(self, action):
+        """Ajoute une action de suivi"""
+        follow_up = {
+            'action': action,
+            'timestamp': timezone.now().isoformat(),
+            'status': 'pending'
+        }
+        if isinstance(self.follow_up_actions, list):
+            self.follow_up_actions.append(follow_up)
+        else:
+            self.follow_up_actions = [follow_up]
+        self.save()
+
+    def add_preventive_measure(self, measure):
+        """Ajoute une mesure préventive"""
+        preventive = {
+            'measure': measure,
+            'added_at': timezone.now().isoformat(),
+            'status': 'proposed'
+        }
+        if isinstance(self.preventive_measures, list):
+            self.preventive_measures.append(preventive)
+        else:
+            self.preventive_measures = [preventive]
+        self.save()
+
+    def get_incident_duration(self):
+        """Calcule la durée de l'incident"""
+        if self.resolved_at:
+            return self.resolved_at - self.date
+        return timezone.now() - self.date
+
+    @classmethod
+    def get_active_incidents(cls):
+        """Récupère tous les incidents actifs"""
+        return cls.objects.filter(resolved=False).order_by('priority', '-date')
+
+    @classmethod
+    def get_incidents_by_type(cls, incident_type):
+        """Récupère les incidents par type"""
+        return cls.objects.filter(type=incident_type).order_by('-date')
+
+class EventLog(models.Model):
+    EVENT_TYPE_CHOICES = [
+        ('trip_start', 'Départ du voyage'),
+        ('trip_end', 'Fin du voyage'),
+        ('passenger_boarding', 'Embarquement passager'),
+        ('passenger_alighting', 'Débarquement passager'),
+        ('delay', 'Retard'),
+        ('incident', 'Incident'),
+        ('route_deviation', 'Déviation de route'),
+        ('vehicle_status', 'Statut du véhicule'),
+        ('driver_status', 'Statut du chauffeur'),
+        ('safety_check', 'Vérification de sécurité'),
+        ('maintenance_alert', 'Alerte maintenance'),
+        ('weather_alert', 'Alerte météo'),
+        ('system_alert', 'Alerte système'),
+        ('rule_violation', 'Violation de règle'),
+        ('schedule_change', 'Changement d\'horaire')
+    ]
+
+    SEVERITY_LEVELS = [
+        ('info', 'Information'),
+        ('warning', 'Avertissement'),
+        ('error', 'Erreur'),
+        ('critical', 'Critique')
+    ]
+
+    # Relations principales
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, 
+                           related_name='event_logs')
+    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, 
+                                null=True, blank=True,
+                                help_text="Règles associées à l'événement")
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, 
+                                 null=True, 
+                                 related_name='created_events')
+
+    # Informations de base
+    event_id = models.CharField(max_length=50, unique=True)
+    event_type = models.CharField(max_length=100, choices=EVENT_TYPE_CHOICES)
+    severity = models.CharField(max_length=20, choices=SEVERITY_LEVELS, 
+                              default='info')
+    timestamp = models.DateTimeField(default=timezone.now)
+    description = models.TextField()
+
+    # Détails de l'événement
+    event_data = models.JSONField(default=dict, 
+                                help_text="Données détaillées de l'événement")
+    location_data = models.JSONField(default=dict, 
+                                   help_text="Données de localisation")
+    related_entities = models.JSONField(default=dict, 
+                                      help_text="Entités liées à l'événement")
+    context_data = models.JSONField(default=dict, 
+                                  help_text="Données contextuelles")
+
+    # Traitement et suivi
+    processed = models.BooleanField(default=False)
+    processing_status = models.CharField(max_length=50, choices=[
+        ('pending', 'En attente'),
+        ('processing', 'En cours'),
+        ('processed', 'Traité'),
+        ('failed', 'Échec'),
+        ('ignored', 'Ignoré')
+    ], default='pending')
+    processing_details = models.JSONField(default=dict)
+    requires_action = models.BooleanField(default=False)
+    action_taken = models.JSONField(default=dict)
+
+    # Validation et conformité
+    validation_status = models.JSONField(default=dict)
+    rule_violations = models.JSONField(default=list)
+
+    # Métadonnées
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    source = models.CharField(max_length=100, help_text="Source de l'événement")
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "Event Log"
+        verbose_name_plural = "Event Logs"
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['event_type', 'timestamp']),
+            models.Index(fields=['trip', 'timestamp']),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} - {self.trip} - {self.timestamp}"
+
+    def save(self, *args, **kwargs):
+        if not self.event_id:
+            # Génère un ID unique pour l'événement
+            prefix = self.event_type[:3].upper()
+            timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
+            self.event_id = f"{prefix}-{timestamp}-{uuid.uuid4().hex[:6]}"
+        
+        # Validation automatique si un rule_set est défini
+        if self.rule_set and not self.validation_status:
+            self.validate_event()
+            
+        super().save(*args, **kwargs)
+
+    def validate_event(self):
+        """Valide l'événement selon les règles définies"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='event')
+            validation_results = {
+                'timestamp': timezone.now().isoformat(),
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            self.validation_status = validation_results
+
+    def mark_as_processed(self, details=None):
+        """Marque l'événement comme traité"""
+        self.processed = True
+        self.processing_status = 'processed'
+        if details:
+            self.processing_details.update({
+                'processed_at': timezone.now().isoformat(),
+                'details': details
+            })
+        self.save()
+
+    def add_action(self, action_details):
+        """Ajoute une action prise en réponse à l'événement"""
+        action = {
+            'timestamp': timezone.now().isoformat(),
+            'details': action_details,
+            'user': self.created_by.username if self.created_by else 'System'
+        }
+        if isinstance(self.action_taken, dict):
+            self.action_taken['actions'] = self.action_taken.get('actions', []) + [action]
+        else:
+            self.action_taken = {'actions': [action]}
+        self.save()
+
+    def add_context(self, context_key, context_value):
+        """Ajoute des données contextuelles à l'événement"""
+        if isinstance(self.context_data, dict):
+            self.context_data[context_key] = context_value
+            self.save()
+
+    def update_location(self, latitude, longitude, additional_info=None):
+        """Met à jour les informations de localisation"""
+        location_data = {
+            'latitude': latitude,
+            'longitude': longitude,
+            'timestamp': timezone.now().isoformat()
+        }
+        if additional_info:
+            location_data.update(additional_info)
+        self.location_data = location_data
+        self.save()
+
+    @classmethod
+    def log_event(cls, trip, event_type, description, **kwargs):
+        """Méthode de classe pour créer un nouvel événement"""
+        return cls.objects.create(
+            trip=trip,
+            event_type=event_type,
+            description=description,
+            **kwargs
+        )
+
+    @classmethod
+    def get_events_for_trip(cls, trip, start_date=None, end_date=None):
+        """Récupère les événements pour un voyage donné"""
+        queryset = cls.objects.filter(trip=trip)
+        if start_date:
+            queryset = queryset.filter(timestamp__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(timestamp__lte=end_date)
+        return queryset.order_by('timestamp')
+
+    @classmethod
+    def get_events_by_type(cls, event_type, start_date=None, end_date=None):
+        """Récupère les événements par type"""
+        queryset = cls.objects.filter(event_type=event_type)
+        if start_date:
+            queryset = queryset.filter(timestamp__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(timestamp__lte=end_date)
+        return queryset.order_by('timestamp')
+
+
+class TripStatus(models.Model):
+    STATUS_CHOICES = [
+        ('scheduled', 'Planifié'),
+        ('preparing', 'En préparation'),
+        ('ongoing', 'En cours'),
+        ('delayed', 'Retardé'),
+        ('paused', 'En pause'),
+        ('completed', 'Terminé'),
+        ('canceled', 'Annulé'),
+        ('interrupted', 'Interrompu')
+    ]
+
+    COMPLETION_STAGES = [
+        ('not_started', 'Non commencé'),
+        ('initial_checks', 'Vérifications initiales'),
+        ('in_progress', 'En progression'),
+        ('final_checks', 'Vérifications finales'),
+        ('completed', 'Terminé')
+    ]
+
+    # Identifiants et relations principales
+    trip_status_id = models.AutoField(primary_key=True)
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, 
+                           help_text="Trajet concerné")
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, 
+                              help_text="Véhicule affecté")
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, 
+                             help_text="Chauffeur assigné")
+    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, 
+                                null=True, blank=True,
+                                help_text="Règles appliquées au statut")
+
+    # Statut général
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, 
+                            default='scheduled')
+    stage = models.CharField(max_length=50, choices=COMPLETION_STAGES, 
+                           default='not_started')
+    progress_percentage = models.IntegerField(default=0, 
+                                            validators=[MinValueValidator(0), 
+                                                      MaxValueValidator(100)])
+
+    # Suivi des arrêts et pauses
+    breaks_status = models.JSONField(default=dict, help_text="Statut détaillé des pauses")
+    breaks_completed = models.BooleanField(default=False)
+    stops_status = models.JSONField(default=dict, help_text="Statut détaillé des arrêts")
+    stops_completed = models.BooleanField(default=False)
+    next_stop = models.ForeignKey('Stop', on_delete=models.SET_NULL, 
+                                 null=True, blank=True,
+                                 related_name='next_stops')
+
+    # Suivi des incidents
+    incidents_status = models.JSONField(default=dict)
+    incidents_resolved = models.BooleanField(default=False)
+    active_incidents = models.JSONField(default=list)
+
+    # Métriques de performance
+    delay_duration = models.DurationField(null=True, blank=True)
+    estimated_completion_time = models.DateTimeField(null=True, blank=True)
+    performance_metrics = models.JSONField(default=dict)
+
+    # Validation et conformité
+    validation_status = models.JSONField(default=dict)
+    rule_violations = models.JSONField(default=list)
+    safety_checks = models.JSONField(default=dict)
+
+    # Suivi des modifications
+    modification_history = models.JSONField(default=list)
+    modified_by = models.ForeignKey(User, on_delete=models.SET_NULL, 
+                                  null=True, related_name='status_modifications')
+
+    # Métadonnées
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Trip Status"
+        verbose_name_plural = "Trip Statuses"
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f"Status {self.trip_status_id} - {self.status} - Trip {self.trip.id}"
+
+    def validate_rules(self, action_type):
+        """Valide les règles applicables"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='trip_status')
+            validation_results = {
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            return validation_results
+        return {'valid': True, 'violations': [], 'warnings': []}
+
+    def log_modification(self, action_type, reason=''):
+        """Enregistre une modification"""
+        modification = {
+            'action': action_type,
+            'timestamp': timezone.now().isoformat(),
+            'user': self.modified_by.username if self.modified_by else 'System',
+            'reason': reason
+        }
+        if isinstance(self.modification_history, list):
+            self.modification_history.append(modification)
+        else:
+            self.modification_history = [modification]
+
+    def update_status(self, new_status, reason=''):
+        """Met à jour le statut avec validation"""
+        rule_check = self.validate_rules('update_status')
+        if rule_check['valid']:
+            self.status = new_status
+            self.log_modification('status_update', reason)
+            self.save()
+        return rule_check
+
+    def update_progress(self):
+        """Met à jour la progression globale"""
+        total_stops = len(self.stops_status)
+        completed_stops = len([s for s in self.stops_status.values() if s.get('completed')])
+        self.progress_percentage = (completed_stops / total_stops * 100) if total_stops > 0 else 0
+        self.save()
+
+    def record_break(self, break_id, status):
+        """Enregistre le statut d'une pause"""
+        if isinstance(self.breaks_status, dict):
+            self.breaks_status[break_id] = {
+                'status': status,
+                'timestamp': timezone.now().isoformat()
+            }
+            self.breaks_completed = all(b.get('status') == 'completed' 
+                                      for b in self.breaks_status.values())
+            self.save()
+
+    def record_stop(self, stop_id, status):
+        """Enregistre le statut d'un arrêt"""
+        if isinstance(self.stops_status, dict):
+            self.stops_status[stop_id] = {
+                'status': status,
+                'timestamp': timezone.now().isoformat()
+            }
+            self.stops_completed = all(s.get('status') == 'completed' 
+                                     for s in self.stops_status.values())
+            self.update_progress()
+            self.save()
+
+    def record_incident(self, incident_data):
+        """Enregistre un nouvel incident"""
+        incident = {
+            'timestamp': timezone.now().isoformat(),
+            'details': incident_data,
+            'status': 'active'
+        }
+        if isinstance(self.active_incidents, list):
+            self.active_incidents.append(incident)
+        else:
+            self.active_incidents = [incident]
+        self.save()
+
+    def resolve_incident(self, incident_id, resolution_details):
+        """Résout un incident actif"""
+        if isinstance(self.active_incidents, list):
+            for incident in self.active_incidents:
+                if incident.get('id') == incident_id:
+                    incident['status'] = 'resolved'
+                    incident['resolution'] = {
+                        'details': resolution_details,
+                        'timestamp': timezone.now().isoformat()
+                    }
+            self.active_incidents = [i for i in self.active_incidents 
+                                   if i.get('status') == 'active']
+            self.incidents_resolved = len(self.active_incidents) == 0
+            self.save()
+
+    def update_safety_checks(self, check_data):
+        """Met à jour les vérifications de sécurité"""
+        if isinstance(self.safety_checks, dict):
+            self.safety_checks.update({
+                timezone.now().isoformat(): check_data
+            })
+            self.save()
+
+    def calculate_delay(self):
+        """Calcule le retard actuel"""
+        if hasattr(self.trip, 'planned_arrival'):
+            estimated_arrival = timezone.now() + self.estimate_remaining_time()
+            if estimated_arrival > self.trip.planned_arrival:
+                self.delay_duration = estimated_arrival - self.trip.planned_arrival
+                self.save()
+
+    def estimate_remaining_time(self):
+        """Estime le temps restant"""
+        # Logique d'estimation du temps restant
+        pass
+
+    @classmethod
+    def get_active_statuses(cls):
+        """Récupère tous les statuts actifs"""
+        return cls.objects.filter(status__in=['ongoing', 'delayed', 'paused'])
+
+    @classmethod
+    def get_delayed_trips(cls):
+        """Récupère les trajets en retard"""
+        return cls.objects.filter(status='delayed')
+
+class DisplaySchedule(models.Model):
+    STATUS_CHOICES = [
+        ('on_time', 'À l\'heure'),
+        ('approaching', 'En approche'),
+        ('boarding', 'Embarquement'),
+        ('delayed', 'Retardé'),
+        ('departed', 'Parti'),
+        ('canceled', 'Annulé'),
+        ('diverted', 'Dévié')
+    ]
+
+    DISPLAY_PRIORITY = [
+        ('normal', 'Normal'),
+        ('important', 'Important'),
+        ('urgent', 'Urgent'),
+        ('low', 'Faible')
+    ]
+
+    # Identifiants et relations principales
+    display_schedule_id = models.AutoField(primary_key=True)
+    trip = models.ForeignKey(Trip, on_delete=models.SET_NULL, null=True,
+                           help_text="Voyage associé")
+    rule_set = models.ForeignKey(RuleSet, on_delete=models.SET_NULL, 
+                                null=True, blank=True,
+                                help_text="Règles d'affichage")
+
+    # Informations d'affichage de base
+    bus_number = models.CharField(max_length=50, 
+                                help_text="Numéro du bus")
+    display_order = models.IntegerField(default=0,
+                                      help_text="Ordre d'affichage")
+    display_priority = models.CharField(max_length=20, 
+                                      choices=DISPLAY_PRIORITY,
+                                      default='normal')
+
+    # Horaires et timing
+    scheduled_departure = models.DateTimeField(
+        help_text="Heure de départ prévue")
+    estimated_departure = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Heure de départ estimée")
+    scheduled_arrival = models.DateTimeField(
+        help_text="Heure d'arrivée prévue")
+    estimated_arrival = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Heure d'arrivée estimée")
+    
+    # Informations sur l'emplacement
+    gate_number = models.CharField(max_length=50,
+                                 help_text="Numéro de la porte")
+    platform = models.CharField(max_length=50,
+                              help_text="Numéro du quai",
+                              blank=True)
+    terminal = models.CharField(max_length=50,
+                              help_text="Terminal",
+                              blank=True)
+
+    # Capacité et disponibilité
+    seats_available = models.IntegerField(
+        default=0,
+        help_text="Nombre de places disponibles")
+    seats_reserved = models.IntegerField(
+        default=0,
+        help_text="Nombre de places réservées")
+    
+    # Localisation et suivi
+    current_location = models.CharField(
+        max_length=255, 
+        blank=True, 
+        null=True,
+        help_text="Localisation actuelle")
+    location_coordinates = models.JSONField(
+        default=dict,
+        help_text="Coordonnées GPS actuelles")
+    next_stop = models.ForeignKey(
+        Stop, 
+        on_delete=models.SET_NULL,
+        null=True, 
+        blank=True,
+        related_name='next_displayed_stops')
+
+    # Statut et notifications
+    status = models.CharField(
+        max_length=50, 
+        choices=STATUS_CHOICES,
+        default='on_time')
+    delay_duration = models.DurationField(null=True, blank=True)
+    status_message = models.CharField(max_length=255, blank=True)
+    announcements = models.JSONField(default=list)
+
+    # Validation et suivi
+    validation_status = models.JSONField(default=dict)
+    display_rules = models.JSONField(default=dict)
+    display_history = models.JSONField(default=list)
+
+    # Métadonnées
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_refresh = models.DateTimeField(auto_now=True)
+    modified_by = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='schedule_display_modifications')
+
+    class Meta:
+        verbose_name = "Display Schedule"
+        verbose_name_plural = "Display Schedules"
+        ordering = ['display_order', 'scheduled_departure']
+
+    def __str__(self):
+        if self.trip:
+            return f"Display for Trip {self.trip.id} - {self.trip.route.name} - {self.scheduled_departure}"
+        return f"Display {self.display_schedule_id} - {self.scheduled_departure}"
+
+    # Propriétés pour l'accès aux informations via Trip
+    @property
+    def route(self):
+        """Accède à la route via le voyage"""
+        return self.trip.route if self.trip else None
+
+    @property
+    def origin(self):
+        """Accède à l'origine via le voyage"""
+        return self.trip.origin if self.trip else None
+
+    @property
+    def destination(self):
+        """Accède à la destination via le voyage"""
+        return self.trip.destination if self.trip else None
+
+    @property
+    def trip_vehicle(self):
+        """Accède au véhicule via le voyage"""
+        return self.trip.vehicle if self.trip else None
+
+    @property
+    def trip_driver(self):
+        """Accède au chauffeur via le voyage"""
+        return self.trip.driver if self.trip else None
+
+    @property
+    def total_seats(self):
+        """Calcule le nombre total de places"""
+        return self.trip.max_capacity if self.trip else 0
+
+    def validate_rules(self):
+        """Valide les règles d'affichage"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='display')
+            validation_results = {
+                'valid': True,
+                'violations': [],
+                'warnings': []
+            }
+            return validation_results
+        return {'valid': True, 'violations': [], 'warnings': []}
+
+    def update_status(self, new_status, message=None):
+        """Met à jour le statut d'affichage"""
+        self.status = new_status
+        if message:
+            self.status_message = message
+        self.log_display_change('status_update')
+        self.save()
+
+    def log_display_change(self, change_type):
+        """Enregistre un changement d'affichage"""
+        change = {
+            'type': change_type,
+            'timestamp': timezone.now().isoformat(),
+            'user': self.modified_by.username if self.modified_by else 'System',
+            'status': self.status,
+            'message': self.status_message
+        }
+        if isinstance(self.display_history, list):
+            self.display_history.append(change)
+        else:
+            self.display_history = [change]
+
+    def add_announcement(self, message, priority='normal'):
+        """Ajoute une annonce à afficher"""
+        announcement = {
+            'message': message,
+            'priority': priority,
+            'timestamp': timezone.now().isoformat()
+        }
+        if isinstance(self.announcements, list):
+            self.announcements.append(announcement)
+        else:
+            self.announcements = [announcement]
+        self.save()
+
+    def update_location(self, latitude, longitude):
+        """Met à jour la position actuelle"""
+        self.location_coordinates = {
+            'latitude': latitude,
+            'longitude': longitude,
+            'timestamp': timezone.now().isoformat()
+        }
+        self.save()
+
+    def calculate_delay(self):
+        """Calcule le retard actuel"""
+        if self.estimated_departure and self.scheduled_departure:
+            self.delay_duration = self.estimated_departure - self.scheduled_departure
+            if self.delay_duration.total_seconds() > 0:
+                self.status = 'delayed'
+            self.save()
+
+    def update_seats(self, available, reserved=None):
+        """Met à jour la disponibilité des places"""
+        self.seats_available = min(available, self.total_seats)
+        if reserved is not None:
+            self.seats_reserved = min(reserved, self.total_seats - self.seats_available)
+        self.save()
+
+    def refresh_display(self):
+        """Rafraîchit les informations d'affichage"""
+        if self.trip:
+            self.calculate_delay()
+            self.validate_rules()
+            self.last_refresh = timezone.now()
+            self.save()
+
+    def sync_with_trip(self):
+        """Synchronise les informations avec le voyage associé"""
+        if self.trip:
+            self.scheduled_departure = self.trip.planned_departure
+            self.scheduled_arrival = self.trip.planned_arrival
+            self.seats_available = self.trip.max_capacity - self.trip.passenger_count
+            self.calculate_delay()
+            self.save()
+
+    @classmethod
+    def get_active_displays(cls):
+        """Récupère les affichages actifs"""
+        return cls.objects.filter(
+            scheduled_departure__gte=timezone.now()
+        ).order_by('display_order', 'scheduled_departure')
+
+    @classmethod
+    def get_delayed_schedules(cls):
+        """Récupère les horaires en retard"""
+        return cls.objects.filter(status='delayed')
+
+    @classmethod
+    def cleanup_old_displays(cls):
+        """Nettoie les anciens affichages"""
+        threshold = timezone.now() - timezone.timedelta(hours=24)
+        cls.objects.filter(scheduled_departure__lt=threshold).delete()
+        
+        
+class BusPosition(models.Model):
+    POSITION_STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('invalid', 'Invalid'),
+        ('interpolated', 'Interpolated'),
+        ('predicted', 'Predicted')
+    ]
+
+    # Identifiant et relations principales
+    position_id = models.AutoField(primary_key=True)
+    trip = models.ForeignKey(Trip, 
+                           on_delete=models.CASCADE,
+                           related_name='positions',
+                           help_text="Voyage associé à cette position")
+    rule_set = models.ForeignKey(RuleSet, 
+                                on_delete=models.SET_NULL,
+                                null=True, blank=True,
+                                help_text="Règles de validation de position")
+
+    # Coordonnées GPS
+    latitude = models.DecimalField(
+        max_digits=9, 
+        decimal_places=6,
+        help_text="Latitude en temps réel")
+    longitude = models.DecimalField(
+        max_digits=9, 
+        decimal_places=6,
+        help_text="Longitude en temps réel")
+    altitude = models.DecimalField(
+        max_digits=7, 
+        decimal_places=2,
+        null=True, blank=True,
+        help_text="Altitude en mètres")
+
+    # Informations de mouvement
+    speed = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2,
+        help_text="Vitesse en km/h")
+    heading = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2,
+        null=True, blank=True,
+        help_text="Direction en degrés")
+    is_moving = models.BooleanField(
+        default=False,
+        help_text="Statut de mouvement")
+
+    # Qualité et statut
+    position_status = models.CharField(
+        max_length=20,
+        choices=POSITION_STATUS_CHOICES,
+        default='active',
+        help_text="Statut de la position")
+    accuracy = models.FloatField(
+        null=True, blank=True,
+        help_text="Précision en mètres")
+    hdop = models.FloatField(
+        null=True, blank=True,
+        help_text="Dilution horizontale de la précision")
+
+    # Horodatage et validité
+    timestamp = models.DateTimeField(
+        default=timezone.now,
+        help_text="Horodatage de la position")
+    recorded_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date d'enregistrement")
+    is_valid = models.BooleanField(
+        default=True,
+        help_text="Validité de la position")
+
+    # Métadonnées
+    data_source = models.CharField(
+        max_length=50,
+        default='gps',
+        help_text="Source des données de position")
+    raw_data = models.JSONField(
+        default=dict,
+        help_text="Données brutes du GPS")
+
+    class Meta:
+        verbose_name = "Bus Position"
+        verbose_name_plural = "Bus Positions"
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['trip', '-timestamp']),
+            models.Index(fields=['timestamp']),
+        ]
+
+    def __str__(self):
+        return f"Position for Trip {self.trip.id} at {self.timestamp}"
+
+    @property
+    def vehicle(self):
+        """Accède au véhicule via le voyage"""
+        return self.trip.vehicle if self.trip else None
+
+    def validate_position(self):
+        """Valide la position selon les règles définies"""
+        if self.rule_set:
+            rules = self.rule_set.rules.filter(rule_type='position')
+            # Logique de validation
+            pass
+        return True
+
+    def calculate_distance_from_previous(self):
+        """Calcule la distance depuis la dernière position"""
+        previous = BusPosition.objects.filter(
+            trip=self.trip,
+            timestamp__lt=self.timestamp
+        ).order_by('-timestamp').first()
+
+        if previous:
+            from math import radians, sin, cos, sqrt, atan2
+            
+            lat1, lon1 = radians(float(previous.latitude)), radians(float(previous.longitude))
+            lat2, lon2 = radians(float(self.latitude)), radians(float(self.longitude))
+            
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+            c = 2 * atan2(sqrt(a), sqrt(1-a))
+            R = 6371  # Rayon de la Terre en km
+            
+            return R * c
+        return 0
+
+    def update_trip_location(self):
+        """Met à jour la localisation dans Trip et DisplaySchedule"""
+        if self.is_valid:
+            # Mise à jour du Trip
+            self.trip.current_location = f"{self.latitude},{self.longitude}"
+            self.trip.save()
+
+            # Mise à jour du DisplaySchedule associé
+            displays = self.trip.displayschedule_set.all()
+            for display in displays:
+                display.current_location = f"{self.latitude},{self.longitude}"
+                display.location_coordinates = {
+                    'latitude': str(self.latitude),
+                    'longitude': str(self.longitude),
+                    'timestamp': self.timestamp.isoformat()
+                }
+                display.save()
+
+    def save(self, *args, **kwargs):
+        # Validation avant sauvegarde
+        self.is_valid = self.validate_position()
+        
+        super().save(*args, **kwargs)
+        
+        # Mise à jour des informations liées
+        if self.is_valid:
+            self.update_trip_location()
+
+    @classmethod
+    def get_latest_position(cls, trip_id):
+        """Récupère la dernière position valide pour un voyage"""
+        return cls.objects.filter(
+            trip_id=trip_id,
+            is_valid=True
+        ).order_by('-timestamp').first()
+
+    @classmethod
+    def cleanup_old_positions(cls, days=7):
+        """Nettoie les anciennes positions"""
+        threshold = timezone.now() - timezone.timedelta(days=days)
+        cls.objects.filter(timestamp__lt=threshold).delete()
+        
+        
+class BusTracking(models.Model):
+    LOCATION_SOURCE_CHOICES = [
+        ('GPS', 'GPS'),
+        ('Station', 'Station de Bus'),
+        ('WiFi', 'Position via WiFi'),
+        ('Manual', 'Entrée Manuelle'),
+        ('cellular', 'Réseau Cellulaire'),
+        ('beacon', 'Beacon'),
+    ]
+
+    VEHICLE_STATUS_CHOICES = [
+        ('in_service', 'En Service'),
+        ('out_of_service', 'Hors Service'),
+        ('maintenance', 'En Maintenance'),
+        ('garage', 'Au Garage'),
+        ('unknown', 'Inconnu')
+    ]
+
+    BATTERY_STATUS_CHOICES = [
+        ('full', 'Pleine'),
+        ('high', 'Haute'),
+        ('medium', 'Moyenne'),
+        ('low', 'Faible'),
+        ('critical', 'Critique'),
+        ('charging', 'En charge')
+    ]
+
+    # Identification
+    tracking_id = models.AutoField(primary_key=True)
+    vehicle = models.ForeignKey(
+        Vehicle, 
+        on_delete=models.CASCADE, 
+        help_text="Bus suivi",
+        related_name='tracking_records'
+    )
+
+    # Localisation
+    latitude = models.DecimalField(
+        max_digits=9, 
+        decimal_places=6,
+        help_text="Latitude en temps réel"
+    )
+    longitude = models.DecimalField(
+        max_digits=9, 
+        decimal_places=6,
+        help_text="Longitude en temps réel"
+    )
+    altitude = models.DecimalField(
+        max_digits=7, 
+        decimal_places=2,
+        null=True, blank=True,
+        help_text="Altitude en mètres"
+    )
+
+    # Mouvement et vitesse
+    speed = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2,
+        help_text="Vitesse en km/h"
+    )
+    heading = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2,
+        null=True, blank=True,
+        help_text="Direction en degrés"
+    )
+    is_moving = models.BooleanField(
+        default=False,
+        help_text="Statut de mouvement"
+    )
+
+    # Source et précision
+    location_source = models.CharField(
+        max_length=100, 
+        choices=LOCATION_SOURCE_CHOICES,
+        default='GPS',
+        help_text="Source des données de position"
+    )
+    accuracy = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2,
+        null=True, blank=True,
+        help_text="Précision en mètres"
+    )
+    signal_strength = models.IntegerField(
+        null=True, blank=True,
+        help_text="Force du signal en pourcentage"
+    )
+
+    # Statuts
+    vehicle_status = models.CharField(
+        max_length=50,
+        choices=VEHICLE_STATUS_CHOICES,
+        default='unknown'
+    )
+    battery_status = models.CharField(
+        max_length=50,
+        choices=BATTERY_STATUS_CHOICES,
+        null=True, blank=True
+    )
+    battery_level = models.IntegerField(
+        null=True, blank=True,
+        help_text="Niveau de batterie en pourcentage"
+    )
+
+    # Informations temporelles
+    timestamp = models.DateTimeField(
+        default=timezone.now,
+        help_text="Horodatage de la position"
+    )
+    last_communication = models.DateTimeField(
+        auto_now=True,
+        help_text="Dernière communication avec le véhicule"
+    )
+
+    # Données additionnelles
+    address = models.CharField(
+        max_length=255,
+        blank=True, null=True,
+        help_text="Adresse approximative"
+    )
+    metadata = models.JSONField(
+        default=dict,
+        help_text="Données additionnelles de tracking"
+    )
+    diagnostic_data = models.JSONField(
+        default=dict,
+        help_text="Données de diagnostic du véhicule"
+    )
+
+    class Meta:
+        verbose_name = "Bus Tracking"
+        verbose_name_plural = "Bus Trackings"
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['vehicle', '-timestamp']),
+            models.Index(fields=['timestamp']),
+            models.Index(fields=['vehicle_status']),
+        ]
+
+    def __str__(self):
+        return f"Bus {self.vehicle.vehicle_number} - {self.vehicle_status} at {self.timestamp}"
+
+    def save(self, *args, **kwargs):
+        # Mise à jour du statut de mouvement
+        if self.speed > 1:  # Plus de 1 km/h
+            self.is_moving = True
+        else:
+            self.is_moving = False
+
+        # Géocodage inverse pour obtenir l'adresse (à implémenter)
+        if not self.address:
+            self.get_address_from_coordinates()
+
+        super().save(*args, **kwargs)
+
+    def get_address_from_coordinates(self):
+        """Obtient l'adresse à partir des coordonnées"""
+        # Implémentation du géocodage inverse
+        pass
+
+    def calculate_distance_from_previous(self):
+        """Calcule la distance depuis la dernière position"""
+        previous = BusTracking.objects.filter(
+            vehicle=self.vehicle,
+            timestamp__lt=self.timestamp
+        ).order_by('-timestamp').first()
+
+        if previous:
+            from math import radians, sin, cos, sqrt, atan2
+            
+            lat1, lon1 = radians(float(previous.latitude)), radians(float(previous.longitude))
+            lat2, lon2 = radians(float(self.latitude)), radians(float(self.longitude))
+            
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+            c = 2 * atan2(sqrt(a), sqrt(1-a))
+            R = 6371  # Rayon de la Terre en km
+            
+            return R * c
+        return 0
+
+    @property
+    def is_active(self):
+        """Vérifie si le tracking est actif"""
+        return (timezone.now() - self.timestamp).total_seconds() < 300  # 5 minutes
+
+    @property
+    def current_trip(self):
+        """Retourne le voyage en cours si le bus est en service"""
+        if self.vehicle_status == 'in_service':
+            return self.vehicle.trip_set.filter(
+                status='in_progress'
+            ).first()
+        return None
+
+    @classmethod
+    def get_active_vehicles(cls):
+        """Retourne tous les véhicules actifs"""
+        recent_time = timezone.now() - timezone.timedelta(minutes=5)
+        return cls.objects.filter(
+            timestamp__gte=recent_time,
+            vehicle_status='in_service'
+        ).select_related('vehicle')
+
+    @classmethod
+    def cleanup_old_records(cls, days=30):
+        """Nettoie les anciens enregistrements"""
+        threshold = timezone.now() - timezone.timedelta(days=days)
+        cls.objects.filter(timestamp__lt=threshold).delete()
+        
+        
+class DriverNavigation(models.Model):
+    NAVIGATION_PROVIDER_CHOICES = [
+        ('google_maps', 'Google Maps'),
+        ('waze', 'Waze'),
+        ('here_maps', 'HERE Maps'),
+        ('mapbox', 'Mapbox'),
+        ('tomtom', 'TomTom'),
+        ('internal', 'Système Interne')
+    ]
+
+    NAVIGATION_STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('active', 'Active'),
+        ('paused', 'En pause'),
+        ('rerouting', 'Recalcul'),
+        ('completed', 'Terminée'),
+        ('failed', 'Échec')
+    ]
+
+    ROUTE_TYPE_CHOICES = [
+        ('fastest', 'Plus rapide'),
+        ('shortest', 'Plus court'),
+        ('eco', 'Économique'),
+        ('avoid_highways', 'Éviter autoroutes'),
+        ('avoid_tolls', 'Éviter péages')
+    ]
+
+    # Identification et relations principales
+    navigation_id = models.AutoField(primary_key=True)
+    trip = models.ForeignKey(
+        Trip, 
+        on_delete=models.CASCADE,
+        related_name='navigations',
+        help_text="Trajet associé"
+    )
+    rule_set = models.ForeignKey(
+        RuleSet, 
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        help_text="Règles de navigation"
+    )
+
+    # Configuration de navigation
+    navigation_provider = models.CharField(
+        max_length=50,
+        choices=NAVIGATION_PROVIDER_CHOICES,
+        default='google_maps'
+    )
+    provider_settings = models.JSONField(
+        default=dict,
+        help_text="Paramètres spécifiques au fournisseur"
+    )
+    route_type = models.CharField(
+        max_length=20,
+        choices=ROUTE_TYPE_CHOICES,
+        default='fastest'
+    )
+
+    # Statut et progression
+    navigation_status = models.CharField(
+        max_length=20,
+        choices=NAVIGATION_STATUS_CHOICES,
+        default='pending'
+    )
+    next_stop = models.ForeignKey(
+        Stop, 
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='navigations_to',
+        help_text="Prochain arrêt"
+    )
+
+    # Instructions et itinéraire
+    route_details = models.JSONField(
+        default=dict,
+        help_text="Détails complets de l'itinéraire"
+    )
+    current_step = models.JSONField(
+        default=dict,
+        help_text="Étape actuelle de navigation"
+    )
+    remaining_steps = models.JSONField(
+        default=list,
+        help_text="Étapes restantes"
+    )
+
+    # Estimations
+    estimated_arrival = models.DateTimeField(
+        help_text="Heure d'arrivée estimée"
+    )
+    estimated_duration = models.DurationField(
+        null=True,
+        help_text="Durée estimée restante"
+    )
+    estimated_distance = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        help_text="Distance restante en km"
+    )
+
+    # Alertes et notifications
+    alerts = models.JSONField(
+        default=list,
+        help_text="Alertes actives"
+    )
+    traffic_info = models.JSONField(
+        default=dict,
+        help_text="Informations trafic"
+    )
+
+    # Métadonnées
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_sync = models.DateTimeField(
+        null=True,
+        help_text="Dernière synchronisation avec le provider"
+    )
+
+    class Meta:
+        verbose_name = "Driver Navigation"
+        verbose_name_plural = "Driver Navigations"
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['trip', '-updated_at']),
+            models.Index(fields=['navigation_status']),
+        ]
+
+    def __str__(self):
+        return f"Navigation for Trip {self.trip.id} - {self.navigation_status}"
+
+    @property
+    def driver(self):
+        """Accède au chauffeur via le voyage"""
+        return self.trip.driver if self.trip else None
+
+    @property
+    def vehicle(self):
+        """Accède au véhicule via le voyage"""
+        return self.trip.vehicle if self.trip else None
+
+    @property
+    def current_location(self):
+        """Obtient la position actuelle via BusTracking"""
+        return self.trip.vehicle.tracking_records.latest('timestamp') if self.trip and self.trip.vehicle else None
+
+    def initialize_navigation(self):
+        """Initialise la navigation avec le provider sélectionné"""
+        if self.navigation_provider == 'google_maps':
+            self.initialize_google_maps()
+        elif self.navigation_provider == 'waze':
+            self.initialize_waze()
+        # Ajouter d'autres providers selon besoin
+
+    def update_route(self):
+        """Met à jour l'itinéraire en fonction de la position actuelle"""
+        current_location = self.current_location
+        if current_location:
+            self.update_provider_route(
+                current_location.latitude,
+                current_location.longitude
+            )
+
+    def update_provider_route(self, lat, lon):
+        """Met à jour l'itinéraire avec le provider"""
+        if self.navigation_provider == 'google_maps':
+            self.update_google_maps_route(lat, lon)
+        # Ajouter d'autres providers
+
+    def handle_rerouting(self):
+        """Gère le recalcul d'itinéraire"""
+        self.navigation_status = 'rerouting'
+        self.update_route()
+        self.save()
+
+    def process_traffic_update(self, traffic_data):
+        """Traite les mises à jour de trafic"""
+        self.traffic_info = traffic_data
+        self.recalculate_estimates()
+        self.save()
+
+    def recalculate_estimates(self):
+        """Recalcule les estimations"""
+        # Logique de recalcul
+        pass
+
+    def add_alert(self, alert_type, message):
+        """Ajoute une alerte"""
+        alert = {
+            'type': alert_type,
+            'message': message,
+            'timestamp': timezone.now().isoformat()
+        }
+        if isinstance(self.alerts, list):
+            self.alerts.append(alert)
+        else:
+            self.alerts = [alert]
+        self.save()
+
+    # Méthodes spécifiques aux providers
+    def initialize_google_maps(self):
+        """Initialise la navigation Google Maps"""
+        # Implémentation de l'intégration Google Maps
+        pass
+
+    def initialize_waze(self):
+        """Initialise la navigation Waze"""
+        # Implémentation de l'intégration Waze
+        pass
+
+    @classmethod
+    def get_active_navigations(cls):
+        """Récupère toutes les navigations actives"""
+        return cls.objects.filter(
+            navigation_status__in=['active', 'rerouting']
+        )
+        
+class PassengerTripHistory(models.Model):
+    STATUS_CHOICES = [
+        ('completed', 'Complété'),
+        ('canceled', 'Annulé'),
+        ('no_show', 'Non présenté'),
+        ('interrupted', 'Interrompu'),
+        ('refunded', 'Remboursé')
+    ]
+
+    SATISFACTION_CHOICES = [
+        (1, 'Très insatisfait'),
+        (2, 'Insatisfait'),
+        (3, 'Neutre'),
+        (4, 'Satisfait'),
+        (5, 'Très satisfait')
+    ]
+
+    # Relations principales
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE,
+        related_name='trip_history'
+    )
+    trip = models.ForeignKey(
+        Trip, 
+        on_delete=models.CASCADE,
+        related_name='passenger_history'
+    )
+
+    # Informations du voyage
+    trip_date = models.DateTimeField(
+        default=timezone.now,
+        help_text="Date et heure du voyage"
+    )
+    boarding_time = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Heure d'embarquement"
+    )
+    alighting_time = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Heure de descente"
+    )
+
+    # Points de départ et d'arrivée
+    origin_stop = models.ForeignKey(
+        'Stop',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='history_as_origin'
+    )
+    destination_stop = models.ForeignKey(
+        'Stop',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='history_as_destination'
+    )
+
+    # Statut et détails du voyage
+    status = models.CharField(
+        max_length=100,
+        choices=STATUS_CHOICES,
+        default='completed'
+    )
+    status_details = models.JSONField(
+        default=dict,
+        help_text="Détails du statut du voyage"
+    )
+
+    # Tarification et paiement
+    fare_paid = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.00
+    )
+    payment_method = models.CharField(
+        max_length=50,
+        blank=True
+    )
+    refund_status = models.JSONField(
+        default=dict,
+        help_text="Informations sur le remboursement si applicable"
+    )
+
+    # Retour d'expérience
+    satisfaction_rating = models.IntegerField(
+        choices=SATISFACTION_CHOICES,
+        null=True, blank=True
+    )
+    feedback = models.JSONField(
+        default=dict,
+        help_text="Retour d'expérience détaillé"
+    )
+    reported_issues = models.JSONField(
+        default=list,
+        help_text="Problèmes signalés pendant le voyage"
+    )
+
+    # Métadonnées
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    modification_history = models.JSONField(
+        default=list,
+        help_text="Historique des modifications"
+    )
+
+    class Meta:
+        verbose_name = "Passenger Trip History"
+        verbose_name_plural = "Passenger Trip Histories"
+        ordering = ['-trip_date']
+        indexes = [
+            models.Index(fields=['user', '-trip_date']),
+            models.Index(fields=['trip', 'status']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.trip} ({self.get_status_display()})"
+
+    def save(self, *args, **kwargs):
+        # Calculer la durée du voyage si possible
+        if self.boarding_time and self.alighting_time:
+            self.status_details['duration'] = (
+                self.alighting_time - self.boarding_time
+            ).total_seconds() / 60  # en minutes
+
+        if not self.trip_date:
+            self.trip_date = self.trip.trip_date
+
+        super().save(*args, **kwargs)
+
+    @property
+    def trip_duration(self):
+        """Calcule la durée du voyage en minutes"""
+        if self.boarding_time and self.alighting_time:
+            return (self.alighting_time - self.boarding_time).total_seconds() / 60
+        return None
+
+    @property
+    def origin(self):
+        """Retourne le nom de l'arrêt d'origine"""
+        return self.origin_stop.name if self.origin_stop else None
+
+    @property
+    def destination(self):
+        """Retourne le nom de l'arrêt de destination"""
+        return self.destination_stop.name if self.destination_stop else None
+
+    def add_feedback(self, rating, comment=None, issues=None):
+        """Ajoute un retour d'expérience"""
+        self.satisfaction_rating = rating
+        feedback_entry = {
+            'rating': rating,
+            'comment': comment,
+            'timestamp': timezone.now().isoformat()
+        }
+        if isinstance(self.feedback, dict):
+            self.feedback = feedback_entry
+        
+        if issues:
+            if isinstance(self.reported_issues, list):
+                self.reported_issues.extend(issues)
+            else:
+                self.reported_issues = issues
+                
+        self.save()
+
+    def process_refund(self, amount, reason):
+        """Traite un remboursement"""
+        refund_info = {
+            'amount': amount,
+            'reason': reason,
+            'processed_at': timezone.now().isoformat(),
+            'original_fare': self.fare_paid
+        }
+        self.refund_status = refund_info
+        self.status = 'refunded'
+        self.save()
+
+    def log_modification(self, action_type, details):
+        """Enregistre une modification"""
+        modification = {
+            'action': action_type,
+            'details': details,
+            'timestamp': timezone.now().isoformat()
+        }
+        if isinstance(self.modification_history, list):
+            self.modification_history.append(modification)
+        else:
+            self.modification_history = [modification]
+        self.save()
+
+    @classmethod
+    def get_user_history(cls, user_id, start_date=None, end_date=None):
+        """Récupère l'historique des voyages d'un utilisateur"""
+        queryset = cls.objects.filter(user_id=user_id)
+        if start_date:
+            queryset = queryset.filter(trip_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(trip_date__lte=end_date)
+        return queryset.order_by('-trip_date')
+
+    @classmethod
+    def get_trip_statistics(cls, user_id):
+        """Calcule les statistiques des voyages d'un utilisateur"""
+        trips = cls.objects.filter(user_id=user_id)
+        return {
+            'total_trips': trips.count(),
+            'completed_trips': trips.filter(status='completed').count(),
+            'canceled_trips': trips.filter(status='canceled').count(),
+            'total_spent': sum(trip.fare_paid for trip in trips),
+            'average_rating': trips.filter(satisfaction_rating__isnull=False)
+                                .aggregate(models.Avg('satisfaction_rating'))
+                                ['satisfaction_rating__avg']
+        }
