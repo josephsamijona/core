@@ -3256,3 +3256,224 @@ class PassengerTripHistory(models.Model):
                                 .aggregate(models.Avg('satisfaction_rating'))
                                 ['satisfaction_rating__avg']
         }
+        
+class TransactionScan(models.Model):
+    SCAN_TYPE_CHOICES = [
+        ('nfc_physical', 'Carte NFC Physique'),
+        ('nfc_virtual', 'NFC Virtuel (Téléphone)'),
+        ('qr_code', 'Code QR'),
+        ('barcode', 'Code-barres'),
+        ('manual', 'Entrée Manuelle'),
+        ('biometric', 'Biométrique')
+    ]
+
+    SCAN_STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('successful', 'Réussi'),
+        ('failed', 'Échoué'),
+        ('expired', 'Expiré'),
+        ('invalid', 'Invalid'),
+        ('duplicate', 'Doublon')
+    ]
+
+    VERIFICATION_STATUS_CHOICES = [
+        ('not_verified', 'Non vérifié'),
+        ('verified', 'Vérifié'),
+        ('verification_failed', 'Échec de vérification'),
+        ('requires_manual', 'Vérification manuelle requise')
+    ]
+
+    # Relations principales
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE,
+        related_name='scans'
+    )
+    card = models.ForeignKey(
+        CardInfo, 
+        on_delete=models.CASCADE,
+        related_name='scans'
+    )
+    trip = models.ForeignKey(
+        Trip, 
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='passenger_scans'
+    )
+
+    # Informations de scan
+    scan_id = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text="Identifiant unique du scan"
+    )
+    scan_type = models.CharField(
+        max_length=50,
+        choices=SCAN_TYPE_CHOICES
+    )
+    scan_data = models.JSONField(
+        default=dict,
+        help_text="Données brutes du scan"
+    )
+
+    # Statut et vérification
+    scan_status = models.CharField(
+        max_length=20,
+        choices=SCAN_STATUS_CHOICES,
+        default='pending'
+    )
+    verification_status = models.CharField(
+        max_length=20,
+        choices=VERIFICATION_STATUS_CHOICES,
+        default='not_verified'
+    )
+
+    # Temporalité
+    timestamp = models.DateTimeField(
+        default=timezone.now,
+        help_text="Moment du scan"
+    )
+    verification_timestamp = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Moment de la vérification"
+    )
+    expiry_time = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Délai d'expiration du scan"
+    )
+
+    # Validation et erreurs
+    is_valid = models.BooleanField(
+        default=False,
+        help_text="Indique si le scan est valide"
+    )
+    failure_reason = models.CharField(
+        max_length=255,
+        null=True, blank=True
+    )
+    error_details = models.JSONField(
+        default=dict,
+        help_text="Détails des erreurs"
+    )
+
+    # Localisation
+    station_id = models.CharField(
+        max_length=50,
+        null=True, blank=True,
+        help_text="ID de la station de scan"
+    )
+    location_data = models.JSONField(
+        default=dict,
+        help_text="Données de localisation du scan"
+    )
+
+    # Métadonnées
+    device_info = models.JSONField(
+        default=dict,
+        help_text="Informations sur l'appareil de scan"
+    )
+    operator_id = models.CharField(
+        max_length=50,
+        null=True, blank=True,
+        help_text="ID de l'opérateur si scan manuel"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Transaction Scan"
+        verbose_name_plural = "Transaction Scans"
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['user', '-timestamp']),
+            models.Index(fields=['card', '-timestamp']),
+            models.Index(fields=['scan_status']),
+        ]
+
+    def __str__(self):
+        return f"Scan {self.scan_id} - {self.user.username} ({self.get_scan_status_display()})"
+
+    def save(self, *args, **kwargs):
+        # Génération de l'ID unique si nouveau scan
+        if not self.scan_id:
+            self.scan_id = self.generate_scan_id()
+        
+        # Définition du délai d'expiration si non défini
+        if not self.expiry_time:
+            self.expiry_time = timezone.now() + timezone.timedelta(minutes=30)
+
+        super().save(*args, **kwargs)
+
+    def generate_scan_id(self):
+        """Génère un ID unique pour le scan"""
+        import uuid
+        return f"SCAN-{timezone.now().strftime('%Y%m%d%H%M')}-{uuid.uuid4().hex[:6]}"
+
+    def verify_scan(self):
+        """Vérifie la validité du scan"""
+        # Vérification de l'expiration
+        if timezone.now() > self.expiry_time:
+            self.scan_status = 'expired'
+            self.is_valid = False
+            self.save()
+            return False
+
+        # Vérification des doublons
+        recent_scan = TransactionScan.objects.filter(
+            user=self.user,
+            trip=self.trip,
+            scan_status='successful',
+            timestamp__gte=timezone.now() - timezone.timedelta(minutes=5)
+        ).exclude(id=self.id).first()
+
+        if recent_scan:
+            self.scan_status = 'duplicate'
+            self.is_valid = False
+            self.save()
+            return False
+
+        # Autres vérifications...
+        return True
+
+    def process_scan(self):
+        """Traite le scan"""
+        if self.verify_scan():
+            # Vérification de la carte
+            if self.verify_card():
+                self.scan_status = 'successful'
+                self.is_valid = True
+                self.verification_status = 'verified'
+                self.verification_timestamp = timezone.now()
+            else:
+                self.scan_status = 'failed'
+                self.failure_reason = 'Invalid card'
+        self.save()
+
+    def verify_card(self):
+        """Vérifie la validité de la carte"""
+        # Logique de vérification de la carte
+        return True
+
+    @property
+    def is_expired(self):
+        """Vérifie si le scan est expiré"""
+        return timezone.now() > self.expiry_time
+
+    @classmethod
+    def get_recent_scans(cls, user_id):
+        """Récupère les scans récents d'un utilisateur"""
+        return cls.objects.filter(
+            user_id=user_id,
+            timestamp__gte=timezone.now() - timezone.timedelta(hours=24)
+        )
+
+    @classmethod
+    def get_trip_scans(cls, trip_id):
+        """Récupère tous les scans pour un voyage"""
+        return cls.objects.filter(trip_id=trip_id)
+
+    @classmethod
+    def cleanup_old_scans(cls, days=30):
+        """Nettoie les anciens scans"""
+        threshold = timezone.now() - timezone.timedelta(days=days)
+        cls.objects.filter(timestamp__lt=threshold).delete()
