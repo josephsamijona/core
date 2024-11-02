@@ -83,3 +83,4 @@ django-celery-beat
 pytz
 django-filter
 geopy
+django-json-widget

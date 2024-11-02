@@ -623,23 +623,44 @@ class Schedule(models.Model):
         if not self.is_valid_for_date(target_date):
             return []
 
-        timepoints = self.generate_timepoints_for_date(target_date)
+        # Vérifier si des trips existent déjà pour cette date
+        if self.trips.filter(planned_departure__date=target_date).exists():
+            return self.trips.filter(planned_departure__date=target_date)
+
+        self.generate_timepoints_for_date(target_date)
         trips = []
 
-        for time_point in timepoints:
-            trip_data = {
-                'schedule': self,
-                'route': self.route,
-                'planned_departure': datetime.combine(
-                    target_date, 
-                    datetime.strptime(time_point, '%H:%M:%S').time()
-                ),
-                'status': 'scheduled',
-                **self.trip_template.get('default_values', {})
-            }
-            trips.append(Trip(**trip_data))
+        for time_point in self.timepoints:
+            departure_time = datetime.combine(
+                target_date,
+                datetime.strptime(time_point, '%H:%M:%S').time()
+            )
+            arrival_time = departure_time + self.calculate_trip_duration()
 
-        return Trip.objects.bulk_create(trips)
+            trip = Trip(
+                schedule=self,
+                route=self.route,
+                planned_departure=departure_time,
+                planned_arrival=arrival_time,
+                origin=self.route.start_point.name if hasattr(self.route, 'start_point') else '',
+                destination=self.route.end_point if hasattr(self.route, 'end_point') else None,
+                max_capacity=self.route.vehicle_capacity if hasattr(self.route, 'vehicle_capacity') else None,
+                trip_type='regular',
+                priority='medium',
+                status='planned',
+                created_by=self.created_by
+            )
+            trips.append(trip)
+
+        # Créer les trips en base de données
+        Trip.objects.bulk_create(trips)
+        return trips
+
+    def calculate_trip_duration(self):
+        """Calcule la durée estimée du trip"""
+        # Vous pouvez ajuster cette méthode en fonction de vos besoins
+        return timedelta(minutes=30)  # Par exemple, chaque trip dure 30 minutes
+
 
     def is_valid_for_date(self, target_date):
         """Vérifie si cet horaire est valide pour une date donnée"""
@@ -1298,53 +1319,172 @@ class Trip(models.Model):
     ]
 
     # Relations principales
-    destination = models.ForeignKey(Destination, on_delete=models.CASCADE)
-    route = models.ForeignKey(Route, on_delete=models.CASCADE)
-    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='trips_as_driver')
-    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE)
-    rule_set = models.ForeignKey(RuleSet, on_delete=models.SET_NULL, null=True, 
-                                help_text="Ensemble de règles appliquées à ce voyage")
+    schedule = models.ForeignKey(
+        Schedule,
+        on_delete=models.CASCADE,
+        related_name='trips',
+        null=True,
+        blank=True
+    )
+    destination = models.ForeignKey(
+        Destination,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    route = models.ForeignKey(
+        Route,
+        on_delete=models.CASCADE
+    )
+    driver = models.ForeignKey(
+        Driver,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trips_as_driver'
+    )
+    vehicle = models.ForeignKey(
+        Vehicle,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    rule_set = models.ForeignKey(
+        RuleSet,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Ensemble de règles appliquées à ce voyage"
+    )
 
     # Informations temporelles
-    trip_date = models.DateTimeField(default=timezone.now, help_text="Date et heure du voyage")
-    planned_departure = models.DateTimeField(help_text="Heure de départ prévue")
-    planned_arrival = models.DateTimeField(help_text="Heure d'arrivée prévue")
-    departure_time = models.DateTimeField(null=True, blank=True, help_text="Heure de départ réelle")
-    arrival_time = models.DateTimeField(null=True, blank=True, help_text="Heure d'arrivée réelle")
-    actual_start_time = models.DateTimeField(null=True, blank=True)
-    actual_end_time = models.DateTimeField(null=True, blank=True)
+    trip_date = models.DateTimeField(
+        default=timezone.now,
+        help_text="Date et heure du voyage"
+    )
+    planned_departure = models.DateTimeField(
+        help_text="Heure de départ prévue"
+    )
+    planned_arrival = models.DateTimeField(
+        help_text="Heure d'arrivée prévue"
+    )
+    departure_time = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Heure de départ réelle"
+    )
+    arrival_time = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Heure d'arrivée réelle"
+    )
+    actual_start_time = models.DateTimeField(
+        null=True,
+        blank=True
+    )
+    actual_end_time = models.DateTimeField(
+        null=True,
+        blank=True
+    )
 
     # Caractéristiques du voyage
-    origin = models.CharField(max_length=255, help_text="Lieu de départ")
-    passenger_count = models.PositiveIntegerField(default=0, help_text="Nombre de passagers")
-    max_capacity = models.PositiveIntegerField(help_text="Capacité maximale")
-    trip_type = models.CharField(max_length=20, choices=TRIP_TYPE_CHOICES, default='regular')
-    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='medium')
+    origin = models.CharField(
+        max_length=255,
+        help_text="Lieu de départ",
+        null=True,
+        blank=True
+    )
+    passenger_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Nombre de passagers"
+    )
+    max_capacity = models.PositiveIntegerField(
+        help_text="Capacité maximale",
+        null=True,
+        blank=True
+    )
+    trip_type = models.CharField(
+        max_length=20,
+        choices=TRIP_TYPE_CHOICES,
+        default='regular'
+    )
+    priority = models.CharField(
+        max_length=20,
+        choices=PRIORITY_CHOICES,
+        default='medium'
+    )
 
     # Statut et suivi
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='planned')
-    delay_duration = models.DurationField(null=True, blank=True, help_text="Durée du retard")
-    real_time_incidents = models.JSONField(default=list, help_text="Incidents survenus")
-    weather_conditions = models.JSONField(default=dict, help_text="Conditions météo")
-    traffic_conditions = models.JSONField(default=dict, help_text="Conditions de circulation")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='planned'
+    )
+    delay_duration = models.DurationField(
+        null=True,
+        blank=True,
+        help_text="Durée du retard"
+    )
+    real_time_incidents = models.JSONField(
+        default=list,
+        help_text="Incidents survenus"
+    )
+    weather_conditions = models.JSONField(
+        default=dict,
+        help_text="Conditions météo"
+    )
+    traffic_conditions = models.JSONField(
+        default=dict,
+        help_text="Conditions de circulation"
+    )
 
     # Validation et conformité
-    validation_status = models.JSONField(default=dict, help_text="État des validations")
-    rule_violations = models.JSONField(default=list, help_text="Violations de règles")
-    safety_checks = models.JSONField(default=dict, help_text="Vérifications de sécurité")
+    validation_status = models.JSONField(
+        default=dict,
+        help_text="État des validations"
+    )
+    rule_violations = models.JSONField(
+        default=list,
+        help_text="Violations de règles"
+    )
+    safety_checks = models.JSONField(
+        default=dict,
+        help_text="Vérifications de sécurité"
+    )
 
     # Suivi des modifications
-    modification_history = models.JSONField(default=list, help_text="Historique des modifications")
-    modified_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
-                                  related_name='trip_modifications')
-    modification_reason = models.TextField(blank=True)
+    modification_history = models.JSONField(
+        default=list,
+        help_text="Historique des modifications"
+    )
+    modified_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trip_modifications'
+    )
+    modification_reason = models.TextField(
+        blank=True
+    )
 
     # Métadonnées
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
-                                 related_name='trips_created')
-    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trips_created'
+    )
+    notes = models.TextField(
+        blank=True
+    )
 
     class Meta:
         verbose_name = "Trip"
@@ -1424,12 +1564,12 @@ class Trip(models.Model):
 
     def increment_passenger_count(self):
         """Incrémente le nombre de passagers avec vérification de capacité"""
-        if self.passenger_count < self.max_capacity:
+        if self.max_capacity is not None and self.passenger_count < self.max_capacity:
             self.passenger_count += 1
             self.log_modification('increment_passenger')
             self.save()
         else:
-            raise ValueError("Maximum capacity reached")
+            raise ValueError("Capacité maximale atteinte ou non définie")
 
     def update_delay(self, delay_minutes):
         """Met à jour le retard du voyage"""
