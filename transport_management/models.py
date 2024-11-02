@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.db.models import Avg
 from geopy.distance import geodesic
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -405,6 +406,23 @@ class Schedule(models.Model):
     peak_hours_frequency = models.IntegerField(null=True, blank=True)
     off_peak_frequency = models.IntegerField(null=True, blank=True)
 
+    # Nouveaux champs pour la gestion des trips
+    trip_template = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Configuration par défaut pour la génération des trips"
+    )
+    schedule_metrics = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Métriques de performance de l'horaire"
+    )
+    resource_requirements = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Exigences en ressources (véhicules, chauffeurs)"
+    )
+
     # Statut et validation existants
     is_active = models.BooleanField(default=True)
     is_approved = models.BooleanField(default=False)
@@ -416,7 +434,7 @@ class Schedule(models.Model):
         related_name='approved_schedules'
     )
 
-    # Nouveaux champs pour la gestion des statuts
+    # Statuts
     STATUS_CHOICES = [
         ('draft', 'Brouillon'),
         ('pending', 'En attente de validation'),
@@ -430,7 +448,6 @@ class Schedule(models.Model):
         choices=STATUS_CHOICES,
         default='draft'
     )
-
     # Gestion des versions
     is_current_version = models.BooleanField(
         default=False,
@@ -465,6 +482,10 @@ class Schedule(models.Model):
         unique_together = [
             ('route', 'day_of_week', 'start_time', 'schedule_version'),
             ('schedule_code', 'schedule_version')
+        ]
+        indexes = [
+            models.Index(fields=['route', 'status', 'is_active']),
+            models.Index(fields=['schedule_code', 'schedule_version'])
         ]
 
     def generate_timepoints_for_date(self, date):
@@ -528,31 +549,30 @@ class Schedule(models.Model):
             if start <= time <= end:
                 return True
         return False
-
     def validate_schedule(self, user, notes=''):
-        """
-        Valide l'horaire et met à jour l'historique de validation.
-        """
-        if self.status in ['validated', 'active']:
-            raise ValidationError("Cet horaire est déjà validé ou actif.")
+            """
+            Valide l'horaire et met à jour l'historique de validation.
+            """
+            if self.status in ['validated', 'active']:
+                raise ValidationError("Cet horaire est déjà validé ou actif.")
 
-        validation_entry = {
-            'validated_by': user.id,
-            'validated_at': timezone.now().isoformat(),
-            'version': self.schedule_version,
-            'notes': notes
-        }
+            validation_entry = {
+                'validated_by': user.id,
+                'validated_at': timezone.now().isoformat(),
+                'version': self.schedule_version,
+                'notes': notes
+            }
 
-        if isinstance(self.validation_history, list):
-            self.validation_history.append(validation_entry)
-        else:
-            self.validation_history = [validation_entry]
+            if isinstance(self.validation_history, list):
+                self.validation_history.append(validation_entry)
+            else:
+                self.validation_history = [validation_entry]
 
-        self.status = 'validated'
-        self.is_approved = True
-        self.approval_date = timezone.now()
-        self.approved_by = user
-        self.save()
+            self.status = 'validated'
+            self.is_approved = True
+            self.approval_date = timezone.now()
+            self.approved_by = user
+            self.save()
 
     def activate(self):
         """
@@ -578,18 +598,14 @@ class Schedule(models.Model):
         self.save()
 
     def archive(self):
-        """
-        Archive l'horaire.
-        """
+        """Archive l'horaire."""
         self.status = 'archived'
         self.is_active = False
         self.is_current_version = False
         self.save()
 
     def create_new_version(self):
-        """
-        Crée une nouvelle version de l'horaire.
-        """
+        """Crée une nouvelle version de l'horaire."""
         new_schedule = Schedule.objects.get(pk=self.pk)
         new_schedule.pk = None
         new_schedule.schedule_version = f"v{int(self.schedule_version[1:]) + 1}" if self.schedule_version.startswith('v') else 'v2'
@@ -601,10 +617,75 @@ class Schedule(models.Model):
         new_schedule.save()
         return new_schedule
 
+    # Nouvelles méthodes pour la gestion des trips
+    def generate_trips(self, target_date):
+        """Génère les trips pour une date donnée"""
+        if not self.is_valid_for_date(target_date):
+            return []
+
+        timepoints = self.generate_timepoints_for_date(target_date)
+        trips = []
+
+        for time_point in timepoints:
+            trip_data = {
+                'schedule': self,
+                'route': self.route,
+                'planned_departure': datetime.combine(
+                    target_date, 
+                    datetime.strptime(time_point, '%H:%M:%S').time()
+                ),
+                'status': 'scheduled',
+                **self.trip_template.get('default_values', {})
+            }
+            trips.append(Trip(**trip_data))
+
+        return Trip.objects.bulk_create(trips)
+
+    def is_valid_for_date(self, target_date):
+        """Vérifie si cet horaire est valide pour une date donnée"""
+        return (
+            self.start_date <= target_date <= self.end_date and
+            self.day_of_week.lower() == target_date.strftime('%A').lower() and
+            self.status == 'active'
+        )
+
+    def get_active_trips(self):
+        """Récupère les trips actifs pour cet horaire"""
+        return self.trips.filter(
+            status__in=['scheduled', 'in_progress'],
+            planned_departure__date=timezone.now().date()
+        )
+
+    def update_schedule_metrics(self):
+        """Met à jour les métriques de performance"""
+        today = timezone.now().date()
+        daily_trips = self.trips.filter(planned_departure__date=today)
+        
+        metrics = {
+            'date': today.isoformat(),
+            'total_trips': daily_trips.count(),
+            'completed_trips': daily_trips.filter(status='completed').count(),
+            'on_time_trips': daily_trips.filter(schedule_adherence='on_time').count(),
+            'delayed_trips': daily_trips.filter(schedule_adherence='delayed').count(),
+            'cancelled_trips': daily_trips.filter(status='cancelled').count(),
+            'average_delay': daily_trips.aggregate(
+                Avg('delay_minutes')
+            )['delay_minutes__avg'] or 0
+        }
+
+        self.schedule_metrics[today.isoformat()] = metrics
+        self.save()
+
+    def check_resource_availability(self, date):
+        """Vérifie la disponibilité des ressources"""
+        required_resources = self.resource_requirements.get('daily', {})
+        return {
+            'vehicles': self._check_vehicle_availability(date, required_resources),
+            'drivers': self._check_driver_availability(date, required_resources)
+        }
+
     def clean(self):
-        """
-        Validation des données avant sauvegarde.
-        """
+        """Validation des données avant sauvegarde."""
         if self.start_time >= self.end_time:
             raise ValidationError("L'heure de fin doit être après l'heure de début")
         if self.frequency <= 0:
@@ -617,9 +698,7 @@ class Schedule(models.Model):
             raise ValidationError("La fréquence hors pointe doit être positive")
 
     def get_next_departure(self, from_time=None):
-        """
-        Trouve le prochain départ à partir d'une heure donnée.
-        """
+        """Trouve le prochain départ à partir d'une heure donnée."""
         if from_time is None:
             from_time = timezone.now().time()
 
@@ -633,9 +712,7 @@ class Schedule(models.Model):
         return None
 
     def get_validation_history(self):
-        """
-        Retourne l'historique des validations formaté.
-        """
+        """Retourne l'historique des validations formaté."""
         return self.validation_history if isinstance(self.validation_history, list) else []
 
     def __str__(self):
