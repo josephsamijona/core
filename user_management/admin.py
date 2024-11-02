@@ -1,54 +1,72 @@
+# admin.py
+
 from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin as DefaultUserAdmin
-from .models import Eleve, UserLog, Permission, User, Notification
+from .models import (
+    User,
+    Eleve,
+    Permission,
+    DeviceInfo,
+    Notification,
+    Feedback,
+    UserLog,
+)
+from django.contrib.auth import get_user_model
 
-class EleveInline(admin.TabularInline):
-    model = Eleve
-    extra = 1
-    fk_name = 'parent'
-    verbose_name = "Enfant"
-    verbose_name_plural = "Enfants"
+User = get_user_model()
 
-class UserAdmin(DefaultUserAdmin):
-    list_display = ('username', 'email', 'user_type', 'is_active', 'last_login', 'date_joined')
-    list_filter = ('user_type', 'is_active', 'is_staff')
+admin.site.unregister(User)
+# Configuration de l'admin pour User
+@admin.register(User)
+class UserAdmin(admin.ModelAdmin):
+    list_display = ('username', 'user_type', 'email', 'first_name', 'last_name', 'sex', 'date_of_birth')
     search_fields = ('username', 'email', 'first_name', 'last_name')
-    readonly_fields = ('last_login', 'date_joined')
-    fieldsets = (
-        (None, {'fields': ('username', 'email', 'password')}),
-        ('Informations personnelles', {'fields': ('first_name', 'last_name', 'telephone', 'address', 'date_of_birth', 'sex')}),
-        ('Permissions', {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')}),
-        ('Dates importantes', {'fields': ('last_login', 'date_joined')}),
-    )
-    inlines = [EleveInline]
+    list_filter = ('user_type', 'sex', 'date_of_birth')
+    ordering = ('username',)
 
-    def save_model(self, request, obj, form, change):
-        """Journaliser les modifications sensibles."""
-        if change:  # Modification existante
-            UserLog.objects.create(
-                user=obj,
-                action="Modification du profil par l'admin",
-                ip_address=self.get_client_ip(request),
-                details="L'utilisateur a été modifié depuis l'admin."
-            )
-        super().save_model(request, obj, form, change)
+# Configuration de l'admin pour Eleve
+@admin.register(Eleve)
+class EleveAdmin(admin.ModelAdmin):
+    list_display = ('user', 'classe', 'numero_etudiant', 'parent')
+    search_fields = ('user__username', 'classe', 'numero_etudiant')
+    list_filter = ('classe',)
 
-    @staticmethod
-    def get_client_ip(request):
-        """Récupère l'adresse IP du client."""
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
+# Configuration de l'admin pour Permission
+@admin.register(Permission)
+class PermissionAdmin(admin.ModelAdmin):
+    list_display = ('name', 'description')
+    search_fields = ('name',)
 
-admin.site.register(User, UserAdmin)
-admin.site.register(Permission)
+# Configuration de l'admin pour DeviceInfo
+@admin.register(DeviceInfo)
+class DeviceInfoAdmin(admin.ModelAdmin):
+    list_display = ('user', 'device_name', 'device_type', 'last_login')
+    search_fields = ('user__username', 'device_name', 'device_type')
+    list_filter = ('device_type',)
 
+# Configuration de l'admin pour Notification
+@admin.register(Notification)
 class NotificationAdmin(admin.ModelAdmin):
-    list_display = ('user', 'message', 'priority', 'created_at')
-    list_filter = ('priority', 'notification_type')
-    search_fields = ('message', 'user__username')
+    list_display = ('user', 'notification_type', 'priority', 'created_at', 'read')
+    search_fields = ('user__username', 'message')
+    list_filter = ('notification_type', 'priority', 'read')
+    ordering = ('-created_at',)
+    actions = ['mark_notifications_as_read']
 
-admin.site.register(Notification, NotificationAdmin)
+    def mark_notifications_as_read(self, request, queryset):
+        queryset.update(read=True)
+    mark_notifications_as_read.short_description = "Marquer les notifications sélectionnées comme lues"
+
+# Configuration de l'admin pour Feedback
+@admin.register(Feedback)
+class FeedbackAdmin(admin.ModelAdmin):
+    list_display = ('user', 'rating', 'created_at')
+    search_fields = ('user__username', 'content')
+    list_filter = ('rating', 'created_at')
+
+# Configuration de l'admin pour UserLog
+@admin.register(UserLog)
+class UserLogAdmin(admin.ModelAdmin):
+    list_display = ('user', 'action', 'timestamp', 'ip_address')
+    search_fields = ('user__username', 'action', 'ip_address')
+    list_filter = ('timestamp',)
+

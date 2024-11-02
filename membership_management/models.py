@@ -111,16 +111,24 @@ class CardInfo(models.Model):
     ]
     is_mobile_nfc = models.BooleanField(default=False)
     mobile_device_id = models.CharField(max_length=255, null=True, blank=True)
-    card_assignment = models.OneToOneField(CardAssignmentid, on_delete=models.CASCADE, related_name='card_info')
-    passenger = models.ForeignKey(PassengerUser, on_delete=models.CASCADE, related_name='cards')
+    card_assignment = models.OneToOneField(
+        CardAssignmentid, on_delete=models.CASCADE, related_name='card_info'
+    )
+    passenger = models.ForeignKey(
+        PassengerUser, on_delete=models.CASCADE, related_name='cards'
+    )
     card_type = models.CharField(max_length=10, choices=CARD_TYPE_CHOICES)
-    nfc_id = models.CharField(max_length=255, null=True, blank=True) 
+    nfc_id = models.CharField(max_length=255, null=True, blank=True)
     issue_date = models.DateField(default=timezone.now)
     expiry_date = models.DateField()
     is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)  # Added field
+    updated_at = models.DateTimeField(auto_now_add=True, null=True)      # Added field
 
     def __str__(self):
         return f"{self.card_assignment.unique_code} ({self.get_card_type_display()}) - {self.passenger.user.get_full_name()}"
+
+
 
 class Subscription(models.Model):
     STATUS_CHOICES = [

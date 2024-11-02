@@ -366,7 +366,7 @@ class RouteStop(models.Model):
 
 class Schedule(models.Model):
     # Relations
-    route = models.ForeignKey('Route', on_delete=models.CASCADE, related_name='schedules')
+    route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='schedules')
 
     # Identification
     schedule_code = models.CharField(max_length=20)
@@ -1225,7 +1225,7 @@ class Trip(models.Model):
     route = models.ForeignKey(Route, on_delete=models.CASCADE)
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='trips_as_driver')
     vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE)
-    rule_set = models.ForeignKey('RuleSet', on_delete=models.SET_NULL, null=True, 
+    rule_set = models.ForeignKey(RuleSet, on_delete=models.SET_NULL, null=True, 
                                 help_text="Ensemble de règles appliquées à ce voyage")
 
     # Informations temporelles
