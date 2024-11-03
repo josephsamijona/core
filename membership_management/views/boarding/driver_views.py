@@ -5,22 +5,22 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 import json
 
-from boarding.utils.validation import (
+from membership_management.views.boarding.boarding_utils.validations import (
     validate_nfc_card,
     validate_qr_code,
     is_duplicate_scan,
     log_validation_error
 )
-from boarding.utils.sync_manager import (
+from membership_management.views.boarding.boarding_utils.sync_manager import (
     enqueue_unsynced_data
 )
-from boarding.models import (
-    TransactionScan,
+from membership_management.models import (
+    BoardingError,
     BoardingValidation,
     PassengerUser,
-    Trip
+    
 )
-
+from transport_management.models import Trip,TransactionScan,Incident
 @csrf_exempt
 def validate_nfc_card_view(request):
     """
