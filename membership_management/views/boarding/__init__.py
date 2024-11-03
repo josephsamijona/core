@@ -1,3 +1,3 @@
-from .boarding_view import *
-from .boarding_validation import *
+from .events import *
+
 from .boarding_utils import *
