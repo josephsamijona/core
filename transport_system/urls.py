@@ -27,7 +27,7 @@ urlpatterns = [
     path('api/auth/', include('user_management.urls')),  # Nouvelle route pour l'authentification
     path('api/inventory/', include('inventory_management.urls')),
     path('api/finance/', include('financial_management.urls')),
-    path('api/membership/', include('membership_management.urls')),
+    #path('api/membership/', include('membership_management.urls')),
     path('api/security/', include('security_management.urls')),
     path('api/transport/', include('transport_management.urls')),
     

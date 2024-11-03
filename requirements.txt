@@ -84,3 +84,7 @@ pytz
 django-filter
 geopy
 django-json-widget
+opencv-python
+Pillow 
+pyzbar
+pyscard

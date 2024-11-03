@@ -213,3 +213,316 @@ class Transaction(models.Model):
     transaction_type = models.CharField(max_length=20)  # 'debit' ou 'credit'
     description = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
+
+
+
+class BoardingSession(models.Model):
+   STATUS_CHOICES = [
+       ('active', 'Active'),
+       ('paused', 'Paused'),
+       ('ended', 'Ended'),
+       ('expired', 'Expired'),
+       ('interrupted', 'Interrupted')
+   ]
+
+   session_id = models.UUIDField(
+       default=uuid.uuid4, 
+       unique=True, 
+       editable=False,
+       help_text="Identifiant unique de la session"
+   )
+   trip = models.ForeignKey(
+       'transport_management.Trip', 
+       on_delete=models.CASCADE,
+       related_name='boarding_sessions'
+   )
+   device_id = models.CharField(
+       max_length=255,
+       help_text="Identifiant unique du dispositif"
+   )
+   start_time = models.DateTimeField(
+       default=timezone.now,
+       help_text="Heure de début de la session"
+   )
+   end_time = models.DateTimeField(
+       null=True, 
+       blank=True,
+       help_text="Heure de fin de la session"
+   )
+   status = models.CharField(
+       max_length=20,
+       choices=STATUS_CHOICES,
+       default='active'
+   )
+   offline_mode = models.BooleanField(
+       default=False,
+       help_text="Indique si la session est en mode hors-ligne"
+   )
+   last_sync = models.DateTimeField(
+       auto_now=True,
+       help_text="Dernière synchronisation"
+   )
+   session_data = models.JSONField(
+       default=dict,
+       help_text="Configuration et données de la session"
+   )
+   created_at = models.DateTimeField(auto_now_add=True)
+   updated_at = models.DateTimeField(auto_now=True)
+
+   class Meta:
+       verbose_name = "Boarding Session"
+       verbose_name_plural = "Boarding Sessions"
+       ordering = ['-start_time']
+       indexes = [
+           models.Index(fields=['session_id']),
+           models.Index(fields=['device_id', 'status']),
+       ]
+
+   def __str__(self):
+       return f"Session {self.session_id} - Trip {self.trip_id}"
+
+class BoardingValidation(models.Model):
+   VALIDATION_TYPE_CHOICES = [
+       ('online', 'Online'),
+       ('offline', 'Offline')
+   ]
+   
+   VALIDATION_STATUS_CHOICES = [
+       ('pending', 'En attente'),
+       ('successful', 'Réussi'),
+       ('failed', 'Échoué'),
+       ('cancelled', 'Annulé'),
+       ('error', 'Erreur')
+   ]
+
+   validation_id = models.UUIDField(
+       default=uuid.uuid4, 
+       unique=True, 
+       editable=False
+   )
+   boarding_session = models.ForeignKey(
+       BoardingSession,
+       on_delete=models.CASCADE,
+       related_name='validations'
+   )
+   transaction_scan = models.ForeignKey(
+       'transport_management.TransactionScan',
+       on_delete=models.CASCADE,
+       related_name='boarding_validations'
+   )
+   passenger_trip = models.ForeignKey(
+       'transport_management.PassengerTrip',
+       on_delete=models.CASCADE,
+       related_name='boarding_validations'
+   )
+   validation_time = models.DateTimeField(
+       default=timezone.now,
+       help_text="Moment de la validation"
+   )
+   validation_type = models.CharField(
+       max_length=20,
+       choices=VALIDATION_TYPE_CHOICES,
+       default='online'
+   )
+   validation_status = models.CharField(
+       max_length=20,
+       choices=VALIDATION_STATUS_CHOICES,
+       default='pending'
+   )
+   validation_details = models.JSONField(
+       default=dict,
+       help_text="Détails de la validation"
+   )
+   created_at = models.DateTimeField(auto_now_add=True)
+   updated_at = models.DateTimeField(auto_now=True)
+
+   class Meta:
+       verbose_name = "Boarding Validation"
+       verbose_name_plural = "Boarding Validations"
+       ordering = ['-validation_time']
+
+   def __str__(self):
+       return f"Validation {self.validation_id} - {self.validation_status}"
+
+class BoardingDevice(models.Model):
+   DEVICE_TYPE_CHOICES = [
+       ('mobile', 'Mobile'),
+       ('desktop', 'Desktop'),
+       ('web', 'Web')
+   ]
+   
+   DEVICE_STATUS_CHOICES = [
+       ('active', 'Active'),
+       ('inactive', 'Inactive'),
+       ('maintenance', 'Maintenance'),
+       ('blocked', 'Blocked')
+   ]
+
+   device_id = models.CharField(
+       max_length=255,
+       unique=True,
+       help_text="Identifiant unique du dispositif"
+   )
+   device_type = models.CharField(
+       max_length=20,
+       choices=DEVICE_TYPE_CHOICES
+   )
+   device_specs = models.JSONField(
+       default=dict,
+       help_text="Caractéristiques du dispositif"
+   )
+   nfc_capabilities = models.JSONField(
+       default=dict,
+       help_text="Capacités NFC pour Android"
+   )
+   registration_token = models.CharField(
+       max_length=255,
+       unique=True,
+       help_text="Token d'enregistrement"
+   )
+   last_active = models.DateTimeField(
+       default=timezone.now
+   )
+   status = models.CharField(
+       max_length=20,
+       choices=DEVICE_STATUS_CHOICES,
+       default='active'
+   )
+   created_at = models.DateTimeField(auto_now_add=True)
+   updated_at = models.DateTimeField(auto_now=True)
+
+   class Meta:
+       verbose_name = "Boarding Device"
+       verbose_name_plural = "Boarding Devices"
+       indexes = [
+           models.Index(fields=['device_id', 'status']),
+       ]
+
+class BoardingError(models.Model):
+   ERROR_TYPE_CHOICES = [
+       ('validation', 'Validation Error'),
+       ('device', 'Device Error'),
+       ('sync', 'Synchronization Error'),
+       ('network', 'Network Error'),
+       ('system', 'System Error')
+   ]
+
+   error_id = models.UUIDField(
+       default=uuid.uuid4,
+       unique=True,
+       editable=False
+   )
+   boarding_session = models.ForeignKey(
+       BoardingSession,
+       on_delete=models.CASCADE,
+       related_name='errors'
+   )
+   error_type = models.CharField(
+       max_length=50,
+       choices=ERROR_TYPE_CHOICES
+   )
+   error_details = models.JSONField(
+       default=dict,
+       help_text="Détails de l'erreur"
+   )
+   timestamp = models.DateTimeField(
+       default=timezone.now
+   )
+   resolved = models.BooleanField(
+       default=False
+   )
+   resolution_details = models.JSONField(
+       null=True,
+       blank=True,
+       help_text="Détails de la résolution"
+   )
+   created_at = models.DateTimeField(auto_now_add=True)
+   updated_at = models.DateTimeField(auto_now=True)
+
+   class Meta:
+       verbose_name = "Boarding Error"
+       verbose_name_plural = "Boarding Errors"
+       ordering = ['-timestamp']
+
+class BoardingConfiguration(models.Model):
+   DEVICE_TYPE_CHOICES = [
+       ('all', 'All Devices'),
+       ('mobile', 'Mobile'),
+       ('desktop', 'Desktop'),
+       ('web', 'Web')
+   ]
+
+   config_key = models.CharField(
+       max_length=255,
+       unique=True,
+       help_text="Clé de configuration unique"
+   )
+   config_value = models.JSONField(
+       default=dict,
+       help_text="Valeur de configuration"
+   )
+   device_type = models.CharField(
+       max_length=20,
+       choices=DEVICE_TYPE_CHOICES,
+       default='all'
+   )
+   active = models.BooleanField(
+       default=True
+   )
+   created_at = models.DateTimeField(auto_now_add=True)
+   updated_at = models.DateTimeField(auto_now=True)
+
+   class Meta:
+       verbose_name = "Boarding Configuration"
+       verbose_name_plural = "Boarding Configurations"
+       unique_together = ['config_key', 'device_type']
+
+class ValidationRule(models.Model):
+   RULE_TYPE_CHOICES = [
+       ('boarding', 'Boarding Rule'),
+       ('capacity', 'Capacity Rule'),
+       ('timing', 'Timing Rule'),
+       ('security', 'Security Rule')
+   ]
+
+   rule_type = models.CharField(
+       max_length=50,
+       choices=RULE_TYPE_CHOICES
+   )
+   rule_definition = models.JSONField(
+       help_text="Définition de la règle"
+   )
+   priority = models.IntegerField(
+       default=0,
+       help_text="Priorité de la règle"
+   )
+   active = models.BooleanField(
+       default=True
+   )
+   created_at = models.DateTimeField(auto_now_add=True)
+   updated_at = models.DateTimeField(auto_now=True)
+
+   class Meta:
+       verbose_name = "Validation Rule"
+       verbose_name_plural = "Validation Rules"
+       ordering = ['priority']
+       indexes = [
+           models.Index(fields=['rule_type', 'active']),
+       ]
+
+   def __str__(self):
+       return f"{self.get_rule_type_display()} - Priority {self.priority}"
+   
+# boarding/models.py
+
+class OfflineValidation(models.Model):
+    passenger = models.ForeignKey(PassengerUser, on_delete=models.CASCADE)
+    trip = models.ForeignKey('transport_management.Trip', on_delete=models.CASCADE)
+    scan_type = models.CharField(max_length=10)  # 'nfc' ou 'qr'
+    timestamp = models.DateTimeField()
+    data = models.TextField()  # Stocke les données brutes en JSON
+    status = models.CharField(max_length=10)  # 'pending', 'synced', 'failed'
+    synchronized_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"OfflineValidation {self.id} - {self.status}"
