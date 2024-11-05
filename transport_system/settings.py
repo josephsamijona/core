@@ -234,6 +234,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'transport_api.tasks.activate_pending_schedules',
         'schedule': crontab(minute='0', hour='0'),
     },
+    'update-trip-statuses-every-minute': {
+        'task': 'schedule.tasks.update_trip_statuses',
+        'schedule': 60.0,  # Toutes les 60 secondes
+    },
 }
 
 CACHES = {

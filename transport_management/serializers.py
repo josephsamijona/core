@@ -6,7 +6,7 @@ from inventory_management.models import Vehicle
 from .models import (
     OperationalRule, RuleExecution, RuleParameter, RuleSet, RuleSetMembership,
     Destination, Route, Stop, RouteStop, Schedule, ScheduleException,
-    ResourceAvailability, Driver
+    ResourceAvailability, Driver, EventLog, Trip, BusPosition, DisplaySchedule
 )
 User = get_user_model()
 
@@ -263,11 +263,13 @@ class ScheduleautomatSerializer(serializers.ModelSerializer):
     validation_history = serializers.JSONField(read_only=True)
     route_name = serializers.CharField(source='route.name', read_only=True)
     current_status = serializers.CharField(source='get_status_display', read_only=True)
-    
+    destination_name = serializers.CharField(source='destination.nom', read_only=True)  # Champ supplémentaire optionnel
+
     class Meta:
         model = Schedule
         fields = [
-            'id', 'route', 'route_name', 'schedule_code', 'schedule_version',
+            'id', 'route', 'route_name', 'destination', 'destination_name',  # Ajout de 'destination' et 'destination_name'
+            'schedule_code', 'schedule_version',
             'season', 'day_of_week', 'start_date', 'end_date',
             'holiday_schedule', 'start_time', 'end_time', 'frequency',
             'rush_hour_adjustment', 'minimum_layover',
@@ -281,18 +283,29 @@ class ScheduleautomatSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id', 'is_approved', 'approval_date', 'approved_by',
             'created_at', 'updated_at', 'created_by', 'timepoints',
-            'validation_history', 'is_current_version', 'activation_date'
+            'validation_history', 'is_current_version', 'activation_date',
+            'route_name', 'current_status', 'destination_name'  # 'destination_name' est en lecture seule
         ]
 
     def validate(self, data):
-        if data.get('start_time') >= data.get('end_time'):
-            raise serializers.ValidationError("L'heure de fin doit être après l'heure de début.")
-        if data.get('frequency', 0) <= 0:
+        if 'start_time' in data and 'end_time' in data:
+            if data['start_time'] >= data['end_time']:
+                raise serializers.ValidationError("L'heure de fin doit être après l'heure de début.")
+        if 'frequency' in data and data['frequency'] <= 0:
             raise serializers.ValidationError("La fréquence doit être positive.")
-        if data.get('start_date') > data.get('end_date'):
-            raise serializers.ValidationError("La date de début doit être avant la date de fin.")
+        if 'start_date' in data and 'end_date' in data:
+            if data['start_date'] > data['end_date']:
+                raise serializers.ValidationError("La date de début doit être avant la date de fin.")
         return data
 
+    def to_representation(self, instance):
+        """Personnaliser la représentation de l'objet pour inclure 'destination_name'."""
+        representation = super().to_representation(instance)
+        # Vous pouvez ajouter ou modifier des champs ici si nécessaire
+        return representation
+    
+    
+    
 class DriverSerializer(serializers.ModelSerializer):
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
     preferred_routes = serializers.PrimaryKeyRelatedField(many=True, queryset=Route.objects.all(), required=False)
@@ -429,3 +442,96 @@ class ResourceAvailabilitySerializer(serializers.ModelSerializer):
         instance.save()
         return instance
     
+    
+class TripSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Trip
+        fields = '__all__'
+
+class TripDetailSerializer(serializers.ModelSerializer):
+    route_details = serializers.SerializerMethodField()
+    current_position = serializers.SerializerMethodField()
+    next_stop = serializers.SerializerMethodField()
+    status_info = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Trip
+        fields = '__all__'
+
+    def get_route_details(self, obj):
+        return {
+            'name': obj.route.name,
+            'stops': list(obj.route.stops.values('id', 'name', 'latitude', 'longitude'))
+        }
+
+    def get_current_position(self, obj):
+        position = obj.positions.order_by('-timestamp').first()
+        if position:
+            return {
+                'latitude': position.latitude,
+                'longitude': position.longitude,
+                'speed': position.speed,
+                'timestamp': position.timestamp
+            }
+        return None
+
+    def get_next_stop(self, obj):
+        # Logique pour déterminer le prochain arrêt
+        return None
+
+    def get_status_info(self, obj):
+        return {
+            'status': obj.status,
+            'delay_minutes': obj.delay_minutes if hasattr(obj, 'delay_minutes') else 0,
+            'progress_percentage': obj.progress_percentage if hasattr(obj, 'progress_percentage') else 0
+        }
+
+class PositionUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BusPosition
+        fields = ('latitude', 'longitude', 'speed', 'heading', 'accuracy', 'altitude')
+
+class TripEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EventLog
+        fields = '__all__'
+        
+        
+# schedule/serializers.py
+class BusPositionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BusPosition
+        fields = ['latitude', 'longitude']
+class DisplayScheduleSerializer(serializers.ModelSerializer):
+    destination = serializers.CharField(source='trip.destination.name', read_only=True)
+    estimated_departure = serializers.DateTimeField(source='trip.estimated_departure', read_only=True)
+    estimated_arrival = serializers.DateTimeField(source='trip.estimated_arrival', read_only=True)
+    status = serializers.CharField(source='trip.status', read_only=True)
+    bus_position = serializers.SerializerMethodField()
+    bus_location_name = serializers.SerializerMethodField()
+
+    def get_bus_position(self, obj):
+        # Récupère la dernière position du bus pour ce trip
+        position = BusPosition.objects.filter(trip=obj.trip).order_by('-timestamp').first()
+        if position:
+            return BusPositionSerializer(position).data
+        else:
+            return None
+
+    def get_bus_location_name(self, obj):
+        position = BusPosition.objects.filter(trip=obj.trip).order_by('-timestamp').first()
+        if position:
+            return position.get_place_name()
+        else:
+            return "Lieu inconnu"
+
+    class Meta:
+        model = DisplaySchedule
+        fields = [
+            'destination',
+            'estimated_departure',
+            'estimated_arrival',
+            'status',
+            'bus_position',
+            'bus_location_name'
+        ]

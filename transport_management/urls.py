@@ -6,7 +6,10 @@ from .views import (
     OperationalRulecViewSet, RuleExecutioncViewSet, RuleParametercViewSet,
     RuleSetViewSet, DestinationcViewSet, RoutecViewSet, StopcViewSet,
     SchedulecViewSet, ResourcecAvailabilityViewSet, DrivercViewSet, 
-    DestinationgestionViewSet, RouteintiViewSet, StopViewSet, RouteStopViewSet,ResourceAvailabilityViewSet,SchedulesetupViewSet, ScheduleExceptionsetupViewSet,DriverViewSet
+    DestinationgestionViewSet, RouteintiViewSet, StopViewSet, RouteStopViewSet,ResourceAvailabilityViewSet,SchedulesetupViewSet, ScheduleExceptionsetupViewSet,DriverViewSet,    TripViewSet, 
+    TripTrackingViewSet,
+    TripEventViewSet,
+    DriverTripViewSet
 )
 
 router = DefaultRouter()
@@ -30,7 +33,10 @@ router.register(r'Schedulesetup', SchedulesetupViewSet, basename='Schedulesetup'
 router.register(r'ScheduleExceptionsetup', ScheduleExceptionsetupViewSet, basename='ScheduleExceptionsetup')
 router.register(r'driversetup', DriverViewSet, basename='driversetup')
 router.register(r'resource-availabilitiesetup', ResourceAvailabilityViewSet, basename='resource-availabilitiesetup')
-
+router.register(r'trips', TripViewSet, basename='trip')
+router.register(r'tracking', TripTrackingViewSet, basename='tracking')
+router.register(r'events', TripEventViewSet, basename='event')
+router.register(r'driver-trips', DriverTripViewSet, basename='driver-trip')
 urlpatterns = [
     path('', include(router.urls)),
 ]

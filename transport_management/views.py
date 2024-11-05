@@ -1,4 +1,5 @@
 # transport_api/views.py
+from rest_framework.views import APIView
 from django.db.models import Q, Count, Sum
 from rest_framework import viewsets, filters, status
 from rest_framework.permissions import IsAuthenticated
@@ -11,8 +12,10 @@ from django.db import transaction
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import (
     OperationalRule, RuleExecution, RuleParameter, RuleSet, Destination,
-    Route, Stop, Schedule, ResourceAvailability, Driver, RouteStop, ScheduleException
+    Route, Stop, Schedule, ResourceAvailability, Driver, RouteStop, ScheduleException,Trip, BusPosition, EventLog, DisplaySchedule
 )
+from transport_management.services.tracking.position_tracking import PositionTrackingService
+from transport_management.services.event.event_manager import TripEventManager
 from inventory_management.serializers import VehicleSerializer
 from inventory_management.models import Vehicle
 from .serializers import (
@@ -20,7 +23,10 @@ from .serializers import (
     RuleSetSerializercrud, DestinationSerializercrud, RouteSerializercrud, StopSerializercrud,
     ScheduleSerializercrud, ResourceAvailabilitySerializercrud, DriverSerializercrud, DestinationSerializer,
     RouteitinineraireSerializer, DestinationitinineraireSerializer, StoparretSerializer, RouteStoparretSerializer,
-    ScheduleautomatSerializer, ScheduleExceptionSerializercrud, DriverSerializer, ResourceAvailabilitySerializer
+    ScheduleautomatSerializer, ScheduleExceptionSerializercrud, DriverSerializer, ResourceAvailabilitySerializer,    TripSerializer, 
+    TripDetailSerializer, 
+    PositionUpdateSerializer,
+    TripEventSerializer, DisplayScheduleSerializer
 )
 import logging
 
@@ -194,6 +200,7 @@ class SchedulesetupViewSet(viewsets.ModelViewSet):
         route = self.request.query_params.get('route')
         season = self.request.query_params.get('season')
         is_current = self.request.query_params.get('is_current')
+        destination = self.request.query_params.get('destination')  # Nouveau filtre
 
         if status_param:
             queryset = queryset.filter(status=status_param)
@@ -203,8 +210,10 @@ class SchedulesetupViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(season=season)
         if is_current is not None:
             queryset = queryset.filter(is_current_version=is_current.lower() == 'true')
+        if destination:
+            queryset = queryset.filter(destination_id=destination)  # Application du filtre
 
-        return queryset.select_related('route', 'approved_by', 'created_by')
+        return queryset.select_related('route', 'destination', 'approved_by', 'created_by')  # Ajout de 'destination'
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -288,21 +297,22 @@ class SchedulesetupViewSet(viewsets.ModelViewSet):
             )
 
         try:
-            schedule = self.get_object()
-            if not schedule.is_approved:
-                return Response(
-                    {'detail': 'Validation requise avant activation.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            with transaction.atomic():
+                schedule = self.get_object()
+                if not schedule.is_approved:
+                    return Response(
+                        {'detail': 'Validation requise avant activation.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
-            schedule.status = 'active'
-            schedule.is_current_version = True
-            schedule.save()
-            
-            generate_daily_schedules.delay()
-            logger.info(f"Horaire {pk} activé par {request.user}")
-            
-            return Response({'detail': 'Horaire activé avec succès.'})
+                schedule.status = 'active'
+                schedule.is_current_version = True
+                schedule.save()
+                
+                generate_daily_schedules.delay()
+                logger.info(f"Horaire {pk} activé par {request.user}")
+                
+                return Response({'detail': 'Horaire activé avec succès.'})
 
         except Exception as e:
             logger.error(f"Erreur lors de l'activation: {str(e)}")
@@ -524,3 +534,174 @@ class ResourceAvailabilityViewSet(viewsets.ModelViewSet):
         ).filter(count__gt=1)
         return Response({'conflicts': list(conflicts)}, status=status.HTTP_200_OK)
 
+
+
+# transport_management/api/v1/views.py
+
+
+
+class TripViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint pour la gestion des trips
+    """
+    serializer_class = TripSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return Trip.objects.all()
+        return Trip.objects.filter(driver=user)
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return TripDetailSerializer
+        return TripSerializer
+
+    @action(detail=True, methods=['post'])
+    def start_trip(self, request, pk=None):
+        """Démarre un trip"""
+        trip = self.get_object()
+        # Logique de démarrage du trip
+        return Response({'status': 'trip started'})
+
+    @action(detail=True, methods=['post'])
+    def end_trip(self, request, pk=None):
+        """Termine un trip"""
+        trip = self.get_object()
+        # Logique de fin du trip
+        return Response({'status': 'trip ended'})
+
+    @action(detail=True, methods=['get'])
+    def status(self, request, pk=None):
+        """Obtient le statut détaillé d'un trip"""
+        trip = self.get_object()
+        serializer = TripDetailSerializer(trip)
+        return Response(serializer.data)
+
+class TripTrackingViewSet(viewsets.ViewSet):
+    """
+    API endpoint pour le tracking GPS des trips
+    """
+    permission_classes = [IsAuthenticated]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tracking_service = PositionTrackingService()
+
+    @action(detail=False, methods=['post'])
+    def update_position(self, request):
+        """
+        Met à jour la position du bus
+        """
+        serializer = PositionUpdateSerializer(data=request.data)
+        if serializer.is_valid():
+            try:
+                position = self.tracking_service.process_gps_data(serializer.validated_data)
+                return Response({
+                    'status': 'success',
+                    'position_id': position.id
+                })
+            except Exception as e:
+                return Response({
+                    'status': 'error',
+                    'message': str(e)
+                }, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['get'])
+    def latest_position(self, request, pk=None):
+        """
+        Obtient la dernière position d'un trip
+        """
+        try:
+            position = BusPosition.objects.filter(
+                trip_id=pk
+            ).order_by('-timestamp').first()
+
+            if position:
+                return Response({
+                    'latitude': position.latitude,
+                    'longitude': position.longitude,
+                    'speed': position.speed,
+                    'timestamp': position.timestamp
+                })
+            return Response({'message': 'No position found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+class TripEventViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint pour la gestion des événements de trip
+    """
+    serializer_class = TripEventSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return EventLog.objects.all()
+
+    @action(detail=False, methods=['post'])
+    def report_incident(self, request):
+        """
+        Signale un incident sur un trip
+        """
+        try:
+            # Logique de signalement d'incident
+            return Response({'status': 'incident reported'})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+class DriverTripViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint pour les chauffeurs
+    """
+    serializer_class = TripDetailSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Trip.objects.filter(driver=self.request.user)
+
+    @action(detail=False, methods=['get'])
+    def current_trip(self, request):
+        """
+        Obtient le trip actuel du chauffeur
+        """
+        trip = Trip.objects.filter(
+            driver=request.user,
+            status='in_progress'
+        ).first()
+
+        if trip:
+            serializer = self.get_serializer(trip)
+            return Response(serializer.data)
+        return Response({'message': 'No active trip'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['post'])
+    def report_issue(self, request, pk=None):
+        """
+        Permet au chauffeur de signaler un problème
+        """
+        trip = self.get_object()
+        # Logique de signalement
+        return Response({'status': 'issue reported'})
+    
+    
+    
+    
+class TodayDisplayScheduleAPIView(APIView):
+    """
+    Vue pour récupérer les DisplaySchedules du jour actuel, uniquement pour les trips non terminés.
+    """
+    def get(self, request):
+        today = timezone.localdate()
+        start_of_day = timezone.make_aware(timezone.datetime.combine(today, timezone.datetime.min.time()))
+        end_of_day = timezone.make_aware(timezone.datetime.combine(today, timezone.datetime.max.time()))
+
+        # Filtrer les DisplaySchedules du jour dont le trip n'est pas terminé
+        display_schedules = DisplaySchedule.objects.filter(
+            scheduled_departure__range=(start_of_day, end_of_day),
+            trip__status__in=['scheduled', 'boarding_soon', 'boarding', 'in_transit', 'arriving_soon']
+        ).order_by('scheduled_departure')
+
+        serializer = DisplayScheduleSerializer(display_schedules, many=True)
+        return Response(serializer.data)

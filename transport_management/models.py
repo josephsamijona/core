@@ -8,6 +8,11 @@ from django.core.exceptions import ValidationError
 from inventory_management.models import Vehicle
 from membership_management.models import CardInfo
 from datetime import timedelta, time, datetime, date
+from geopy.geocoders import Nominatim
+from django.core.cache import cache
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+
 from django.core.validators import MinValueValidator, MaxValueValidator
 import uuid
 
@@ -368,7 +373,15 @@ class RouteStop(models.Model):
 class Schedule(models.Model):
     # Relations
     route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='schedules')
-
+    destination = models.ForeignKey(
+        Destination,
+        on_delete=models.CASCADE,
+        related_name='schedules',
+        verbose_name="Destination",
+        help_text="Destination associée à cet horaire",
+        null=True,
+        blank=True
+    )
     # Identification
     schedule_code = models.CharField(max_length=20)
     schedule_version = models.CharField(max_length=10)
@@ -1291,6 +1304,9 @@ class DriverVehicleAssignment(models.Model):
         # Logique de validation de l'éligibilité
         pass
 
+def calculate_distance(coord1, coord2):
+        
+       return geodesic(coord1, coord2).kilometers
 
 class Trip(models.Model):
     STATUS_CHOICES = [
@@ -1505,6 +1521,8 @@ class Trip(models.Model):
             }
             return validation_results
         return {'valid': True, 'violations': [], 'warnings': []}
+    
+    
 
     def log_modification(self, action_type, reason=''):
         """Enregistre une modification dans l'historique"""
@@ -1589,6 +1607,72 @@ class Trip(models.Model):
         """Vérifie les exigences de sécurité"""
         # Logique de vérification de sécurité
         pass
+    
+
+    
+    def update_status(self):
+        """Met à jour le statut du voyage en fonction du temps et de la position."""
+        now = timezone.now()
+        time_to_departure = (self.planned_departure - now).total_seconds() / 60  # en minutes
+        time_since_departure = (now - self.planned_departure).total_seconds() / 60  # en minutes
+        time_to_arrival = (self.planned_arrival - now).total_seconds() / 60  # en minutes
+
+        # Récupérer la dernière position du bus
+        bus_position = BusPosition.objects.filter(trip=self).order_by('-timestamp').first()
+
+        # Par défaut, statut initial
+        new_status = 'scheduled'
+
+        if time_to_departure > 10:
+            new_status = 'scheduled'
+        elif 5 < time_to_departure <= 10:
+            new_status = 'boarding_soon'
+        elif 0 <= time_to_departure <= 5:
+            new_status = 'boarding'
+        elif time_since_departure >= 0 and time_to_arrival > 5:
+            new_status = 'in_transit'
+        elif bus_position and self.destination and \
+             self.destination.latitude is not None and self.destination.longitude is not None:
+            # Calculer la distance jusqu'à la destination
+            try:
+                destination_coords = (self.destination.latitude, self.destination.longitude)
+                bus_coords = (bus_position.latitude, bus_position.longitude)
+                distance_to_destination = calculate_distance(bus_coords, destination_coords)
+                if distance_to_destination <= 1:  # Moins de 1 km
+                    new_status = 'arriving_soon'
+                else:
+                    new_status = 'in_transit'
+            except Exception as e:
+                # Gérer les erreurs potentielles lors du calcul de distance
+                new_status = 'in_transit'
+        elif 0 <= time_to_arrival <= 5:
+            new_status = 'arriving_soon'
+        elif time_since_departure > 0 and time_to_arrival <= 0:
+            new_status = 'completed'
+        else:
+            new_status = 'scheduled'  # Statut par défaut si aucune condition n'est remplie
+
+        # Mettre à jour le statut du trip si différent
+        if self.status != new_status:
+            self.status = new_status
+            self.save()
+
+        # Mettre à jour le statut du trip
+
+        # Envoyer la mise à jour via WebSocket
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'trip_status_{self.id}',
+            {
+                'type': 'send_status',
+                'status': {
+                    'trip_id': self.id,
+                    'status': self.status
+                }
+            }
+        )
+    
+
 
     def update_weather_conditions(self, conditions):
         """Met à jour les conditions météo"""
@@ -2785,6 +2869,19 @@ class BusPosition(models.Model):
             
             return R * c
         return 0
+    
+    def get_place_name(self):
+        """Convertit les coordonnées GPS en nom de lieu."""
+        # Utiliser le cache pour éviter des appels répétés à l'API
+        cache_key = f'place_name_{self.latitude}_{self.longitude}'
+        place_name = cache.get(cache_key)
+        if not place_name:
+            geolocator = Nominatim(user_agent="transport_management")
+            location = geolocator.reverse((self.latitude, self.longitude), exactly_one=True)
+            place_name = location.address if location else "Lieu inconnu"
+            # Stocker le résultat dans le cache pendant 1 heure
+            cache.set(cache_key, place_name, timeout=3600)
+        return place_name
 
     def update_trip_location(self):
         """Met à jour la localisation dans Trip et DisplaySchedule"""
